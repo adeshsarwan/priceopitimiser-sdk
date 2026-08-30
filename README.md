@@ -66,11 +66,16 @@ Preferred generic publisher snippet:
 
 The generic SDK reads placement, selector, size, rewarded, interstitial, and debug settings from Price Optimiser runtime-config. It does not contain a publisher-specific placement map.
 
-Legacy site-specific snippets are still available while migrating existing publishers:
+JobGuideMatch uses its site-specific entry bundle. The publisher should replace only the script URL; `jobguidematch.com.js` pins the site key internally and exposes the same public browser API aliases as the generic bundle:
+
+```html
+<script async src="https://priceoptimiser1.thebesads.com/experiences/jobguidematch.com.js"></script>
+```
+
+Other legacy site-specific snippets are still available while migrating existing publishers:
 
 ```html
 <script async src="https://priceoptimiser1.thebesads.com/experiences/quiz-rush.js"></script>
-<script async src="https://priceoptimiser1.thebesads.com/experiences/jobguidematch.js"></script>
 ```
 
 Optional attributes:

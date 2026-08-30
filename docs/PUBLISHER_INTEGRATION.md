@@ -6,7 +6,7 @@ The SDK handles GAM slot creation, display refreshes, interstitial triggers, and
 
 ## Install
 
-Use the generic bundle for your domain. Price Optimiser identifies the publisher by `data-po-site` and returns the configured placements from runtime-config.
+Most publishers use the generic bundle for their domain. Price Optimiser identifies the publisher by `data-po-site` and returns the configured placements from runtime-config.
 
 ```html
 <script
@@ -16,11 +16,16 @@ Use the generic bundle for your domain. Price Optimiser identifies the publisher
 </script>
 ```
 
-During migration, old site-specific bundles may still exist:
+JobGuideMatch uses its site-specific entry bundle. Changing only the script URL is sufficient; do not keep `data-po-site` on the JobGuideMatch script:
+
+```html
+<script async src="https://priceoptimiser1.thebesads.com/experiences/jobguidematch.com.js"></script>
+```
+
+During migration, other site-specific bundles may still exist:
 
 ```html
 <script async src="https://priceoptimiser1.thebesads.com/experiences/quiz-rush.js"></script>
-<script async src="https://priceoptimiser1.thebesads.com/experiences/jobguidematch.js"></script>
 ```
 
 Do not include a second custom GPT setup for the same Price Optimiser ad slots. The SDK loads GPT when needed and avoids duplicate GPT loading.

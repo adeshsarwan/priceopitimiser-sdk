@@ -1,8 +1,11 @@
 import { createExperience, readScriptOptions } from '../core/bootstrap.js';
 
-const options = readScriptOptions({
+const scriptOptions = readScriptOptions({
   siteKey: 'jobguidematch.com',
-  bundleName: 'jobguidematch.js'
+  bundleName: 'jobguidematch'
+});
+const options = Object.assign({}, scriptOptions, {
+  siteKey: 'jobguidematch.com'
 });
 
 const SHARED_INTERSTITIAL_CAP = 'jobguidematch:results-interstitials';
@@ -17,7 +20,7 @@ const DEFAULT_JOB_CARD_SELECTOR = [
 ].join(', ');
 
 export const jobGuideMatchExperience = {
-  siteKey: options.siteKey || 'jobguidematch.com',
+  siteKey: 'jobguidematch.com',
   placements: [
     { slotKey: 'ad-leaderboard', selector: '#ad-leaderboard', aliases: ['native-leaderboard'], adUnitType: 'native' },
     { slotKey: 'ad-incontent', selector: '#ad-incontent', aliases: ['native-incontent'], adUnitType: 'native' },
@@ -73,4 +76,6 @@ export const jobGuideMatch = createExperience(jobGuideMatchExperience, options);
 if (typeof window !== 'undefined') {
   window.PublisherExperienceSDK = window.PublisherExperienceSDK || {};
   window.PublisherExperienceSDK.jobGuideMatch = jobGuideMatch;
+  if (!window.PublisherExperience) window.PublisherExperience = jobGuideMatch;
+  if (!window.PriceOptimiserExperience) window.PriceOptimiserExperience = jobGuideMatch;
 }

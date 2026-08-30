@@ -1,0 +1,308 @@
+# Publisher Experience SDK Integration
+
+This document is for publisher frontend teams integrating the Price Optimiser Publisher Experience SDK.
+
+The SDK handles GAM slot creation, display refreshes, interstitial triggers, and rewarded lifecycle events. Price Optimiser remains the only source of truth for pricing, experiments, waterfall, targeting, fallback, and reporting.
+
+## Install
+
+Use the generic bundle for your domain. Price Optimiser identifies the publisher by `data-po-site` and returns the configured placements from runtime-config.
+
+```html
+<script
+  async
+  src="https://priceoptimiser1.thebesads.com/experiences/publisher-sdk.js"
+  data-po-site="quiz-rush.com">
+</script>
+```
+
+During migration, old site-specific bundles may still exist:
+
+```html
+<script async src="https://priceoptimiser1.thebesads.com/experiences/quiz-rush.js"></script>
+<script async src="https://priceoptimiser1.thebesads.com/experiences/jobguidematch.js"></script>
+```
+
+Do not include a second custom GPT setup for the same Price Optimiser ad slots. The SDK loads GPT when needed and avoids duplicate GPT loading.
+
+## Page Slots
+
+Create empty divs wherever the ads should appear. The publisher can style the surrounding layout to match the site UI.
+
+Example:
+
+```html
+<div id="ad-leaderboard" class="site-ad site-ad-leaderboard"></div>
+<div id="ad-incontent" class="site-ad site-ad-incontent"></div>
+<div id="ad-results" class="site-ad site-ad-results"></div>
+<aside id="ad-sidebar" class="site-ad site-ad-sidebar"></aside>
+<div id="ad-anchor" class="site-ad site-ad-anchor"></div>
+```
+
+The div IDs are the public placement handles. Price Optimiser must have matching placement settings for `slotKey`, `domId`, and `domSelector`. The publisher should not configure GAM paths, price rules, targeting keys, experiment groups, or floor values.
+
+## Public API
+
+After the script loads, the site API is available on `window.PublisherExperienceSDK`.
+
+```js
+const ads = window.PublisherExperience;
+```
+
+Available methods:
+
+```js
+await ads.init();
+await ads.refresh("ad-leaderboard");
+await ads.refresh("ad-incontent");
+await ads.refresh("ad-results");
+await ads.refresh("ad-sidebar");
+await ads.refresh("ad-anchor");
+await ads.refreshAll();
+await ads.preloadSlots(["ad-leaderboard", "ad-incontent", "ad-results", "ad-anchor"]);
+await ads.revealSlots(["ad-leaderboard", "ad-incontent", "ad-results", "ad-anchor"]);
+await ads.preloadRewarded();
+await ads.showInterstitial();
+await ads.showRewarded(callbacks);
+const current = ads.status();
+```
+
+Return values are intentionally small. Refresh methods expose request status and public placement identity only:
+
+```js
+{
+  status: "filled",
+  slotKey: "ad-leaderboard",
+  domId: "ad-leaderboard",
+  type: "native"
+}
+```
+
+`status()` may also expose layout state and the viewport-filtered request sizes for UI work:
+
+```js
+{
+  loaded: true,
+  siteKey: "quiz-rush.com",
+  slots: [
+    {
+      slotKey: "ad-leaderboard",
+      domId: "ad-leaderboard",
+      type: "native",
+      state: "filled",
+      filled: true,
+      collapsed: false,
+      sizes: [[320, 50]]
+    }
+  ]
+}
+```
+
+The SDK does not return Price Optimiser runtime internals such as waterfall, `price_rule`, GAM ad-unit path, targeting, pricing key, country, experiment assignment, or retry policy.
+
+## Refresh Examples
+
+Refresh a single placement after replacing page content:
+
+```js
+async function renderNextQuestion(questionHtml) {
+  document.querySelector(".question-panel").innerHTML = questionHtml;
+  await window.PublisherExperience.refresh("ad-incontent");
+}
+```
+
+Refresh all currently available display placements after a client-side route change:
+
+```js
+window.addEventListener("quiz:route-complete", async () => {
+  await window.PublisherExperience.refreshAll();
+});
+```
+
+If a div is not present on the current page, the SDK skips it. It does not keep searching forever.
+
+## Preload Examples
+
+Preload current-page anchor and native placements by explicit publisher div ID:
+
+```js
+await window.PublisherExperience.preloadSlots([
+  "ad-leaderboard",
+  "ad-incontent",
+  "ad-results",
+  "ad-anchor"
+]);
+```
+
+Native and Anchor preload/refresh tokens must be exact div IDs that already exist in the current page DOM. Generic tokens such as `native` and `anchor` return `invalid_slot` with `explicit_div_id_required` and do not create GAM requests. The SDK still owns the mapped GAM ad-unit path, sizes, experiment, ladders, and targeting. It skips slots whose divs do not exist yet.
+
+For Native and Anchor display placements, `preloadSlots()` is preparation-only. It records the future placement lifecycle and validates the exact publisher divs, but it does not define hidden GPT slots, create offscreen divs, or request GAM inventory. For SPA reward flows, call `preloadSlots()` while the user is in the rewarded/waiting step and the display divs already exist. After the article or results page is unhidden, call `revealSlots()` with the same exact div IDs. The reveal call makes the normal visible request into the real publisher div, without publisher code touching GAM.
+
+Preload a rewarded ad before the user reaches the reward gate:
+
+```js
+window.PublisherExperience.preloadRewarded({
+  onReady() {
+    console.debug("Rewarded ad is ready");
+  },
+  onFallback({ status }) {
+    console.debug("Rewarded preload fallback:", status);
+  }
+});
+```
+
+`preloadRewarded()` requests the rewarded ad but does not show it. The next `showRewarded()` call consumes the preloaded ad automatically. Pass `{ usePreload: false }` to `showRewarded()` only when a fresh rewarded request is required.
+
+## Interstitial Example
+
+The publisher may manually request an interstitial at a natural break in the user journey.
+
+```js
+async function continueAfterStep() {
+  const result = await window.PublisherExperience.showInterstitial();
+
+  // Always continue the publisher journey. The SDK does not block content.
+  goToNextStep();
+
+  console.debug("Interstitial status:", result.status);
+}
+```
+
+The returned status may be `closed`, `shown`, `timeout`, `unavailable`, `busy`, or `error`.
+
+## Rewarded Example
+
+The publisher owns the reward proposition, UI copy, and unlock behavior. The SDK only triggers the rewarded GAM lifecycle and reports success or fallback.
+
+```js
+async function unlockResultsWithReward() {
+  showLoadingState();
+
+  const result = await window.PublisherExperience.showRewarded({
+    onReady() {
+      hideLoadingState();
+    },
+    onGranted({ reward }) {
+      unlockResults();
+      console.debug("Reward granted:", reward);
+    },
+    onFallback({ status }) {
+      hideLoadingState();
+      showManualContinueButton();
+      console.debug("Reward fallback:", status);
+    },
+    onClosed() {
+      hideLoadingState();
+    }
+  });
+
+  return result.status;
+}
+```
+
+Do not use the SDK to invent reward text or force a reward claim. The publisher page decides what the user sees before and after the ad.
+
+## Styling Guidance
+
+The SDK marks page containers with state attributes/classes and collapses the placement div after the final no-fill result. Publishers still own the page layout and should reserve the correct space before the SDK loads to prevent CLS.
+
+State markers added by the SDK:
+
+```html
+<div
+  id="ad-leaderboard"
+  class="site-ad po-slot po-slot--native po-slot--filled"
+  data-po-slot-key="ad-leaderboard"
+  data-po-slot-type="native"
+  data-po-slot-state="filled"
+  data-po-slot-sizes="320x50"
+></div>
+```
+
+Possible `data-po-slot-state` values are `reserved`, `requesting`, `filled`, and `empty`. Empty slots receive `hidden` and `data-po-slot-collapsed="true"`.
+
+Native placements can look like banners in the page design, but they are still GAM native ad units. The publisher should create a fixed ad box matching the expected request sizes so GPT receives a measurable slot and the page does not jump when the ad arrives.
+
+Recommended slot boxes:
+
+| Placement | GAM format | Mobile request size | Desktop request size | Layout guidance |
+| --- | --- | --- | --- | --- |
+| `ad-leaderboard` | Native | `320x50` | `728x90` | Reserve a horizontal slot above or between content. Center the creative area. |
+| `ad-incontent` | Native | `300x250` or `336x280` | `300x250` or `336x280` | Reserve an in-article rectangle. Do not render it inside `display:none` content. |
+| `ad-results` | Native | `300x250` or `336x280` | `300x250` or `336x280` | Reserve the result-page native container before results are shown. |
+| `ad-sidebar` | Display/banner | Not normally used on narrow mobile | `300x250` or `300x600` | Use only where a sidebar column is visible and has stable width. |
+| `ad-anchor` | Anchor/display | `320x50` | `728x90` | Use a sticky/fixed bottom area or a stable footer slot. Keep important UI clear of it. |
+
+Example:
+
+```css
+.site-ad {
+  display: block;
+  margin: 24px auto;
+  overflow: hidden;
+  text-align: center;
+}
+
+.site-ad-leaderboard {
+  width: min(100%, 728px);
+  min-height: 50px;
+}
+
+.site-ad-anchor {
+  width: 100%;
+  min-height: 50px;
+}
+
+.site-ad-incontent,
+.site-ad-results {
+  width: min(100%, 336px);
+  min-height: 280px;
+}
+
+.site-ad-sidebar {
+  width: 300px;
+  min-height: 250px;
+}
+
+.site-ad[hidden],
+.site-ad[data-po-slot-state="empty"] {
+  display: none !important;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+}
+
+@media (min-width: 768px) {
+  .site-ad-leaderboard,
+  .site-ad-anchor {
+    min-height: 90px;
+  }
+
+  .site-ad-sidebar {
+    min-height: 600px;
+  }
+}
+```
+
+Use styling that matches the publisher site. The SDK only needs the correct div IDs to attach the GAM slots.
+
+CLS checklist:
+
+- Put ad divs in the HTML before the SDK loads.
+- Give every ad div an explicit width and minimum height for the intended viewport.
+- Do not create ad containers above existing content after page render.
+- Do not request a slot while its container or parent is `display:none`.
+- Let the SDK collapse no-fill slots via `hidden`; do not remove the div permanently if you plan to call `refresh()`.
+- On mobile, keep anchor ads outside critical navigation and CTA areas.
+
+## What Publishers Must Not Do
+
+Do not call `googletag.defineSlot()` for Price Optimiser placements.
+
+Do not pass floors, countries, price ladders, targeting values, experiment groups, or GAM ad-unit paths into the SDK.
+
+Do not call `googletag.pubads().refresh()` directly for SDK-owned slots.
+
+Do not add another script that defines the same `ad-leaderboard`, `ad-incontent`, `ad-results`, `ad-sidebar`, or `ad-anchor` slots.
+
+Price Optimiser provides all monetisation data through runtime-config. The publisher API is only for placement, refresh timing, interstitial timing, and rewarded UI coordination.

@@ -318,11 +318,13 @@ function experimentTargetingFor({ runtime, cfg, experiment, state }) {
     value(cfg, 'exp_group', 'expGroup')
   );
   const expGroup = configuredGroup || cleanGroup(experiment && experiment.expGroup);
-  const expKey = value(runtime, 'exp_key', 'expKey') ||
+  const internalExpKey = value(runtime, 'exp_key', 'expKey') ||
     (selectedArm ? value(selectedArm, 'exp_key', 'expKey') : null) ||
     value(cfg, 'exp_key', 'expKey') ||
     (experiment && experiment.expKey) ||
     null;
+  const expKey = value(cfg, 'reportingVersion') ||
+    value(objectValue(cfg, 'experiment'), 'reportingVersion') || internalExpKey;
   const explicitSlotName = value(cfg, 'slot_name', 'slotName');
   const slotName = explicitSlotName || slotNameForTargeting(cfg, state && state.name);
 

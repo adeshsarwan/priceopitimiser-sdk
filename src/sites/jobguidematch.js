@@ -21,6 +21,8 @@ const DEFAULT_JOB_CARD_SELECTOR = [
 
 export const jobGuideMatchExperience = {
   siteKey: 'jobguidematch.com',
+  displayPreloadMode: 'real',
+  publisherControlledPreloadRoutes: ['/find/apply/*'],
   placements: [
     { slotKey: 'ad-leaderboard', selector: '#ad-leaderboard', aliases: ['native-leaderboard'], adUnitType: 'native' },
     { slotKey: 'ad-incontent', selector: '#ad-incontent', aliases: ['native-incontent'], adUnitType: 'native' },

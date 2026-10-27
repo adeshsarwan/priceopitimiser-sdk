@@ -1,4 +1,4 @@
-import { rm, mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import { rm, mkdir, readFile, writeFile, rename, copyFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 
 const entries = [
@@ -10,6 +10,10 @@ const entries = [
   ['cosmicseek.com', 'src/sites/cosmicseek.com.js'],
   ['duniyaa.in', 'src/sites/duniyaa.in.js']
 ];
+
+const exactAliasBundles = new Map([
+  ['jobguidematch', ['jobguidematch.com']]
+]);
 
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist/sourcemaps', { recursive: true });
@@ -32,5 +36,20 @@ for (const [name, entryPoint] of entries) {
 
   const bundled = await readFile(outfile, 'utf8');
   await writeFile(outfile, bundled.replace(/\n?\/\/# sourceMappingURL=.*\.map\s*$/u, ''), 'utf8');
-  await rename(`${outfile}.map`, `dist/sourcemaps/${name}.js.map`);
+  const sourceMapFile = `dist/sourcemaps/${name}.js.map`;
+  await rename(`${outfile}.map`, sourceMapFile);
+
+  for (const alias of exactAliasBundles.get(name) ?? []) {
+    const aliasOutfile = `dist/${alias}.js`;
+    await copyFile(outfile, aliasOutfile);
+    await copyFile(sourceMapFile, `dist/sourcemaps/${alias}.js.map`);
+
+    const [primaryBytes, aliasBytes] = await Promise.all([
+      readFile(outfile),
+      readFile(aliasOutfile)
+    ]);
+    if (!primaryBytes.equals(aliasBytes)) {
+      throw new Error(`${aliasOutfile} must be an exact byte-for-byte alias of ${outfile}`);
+    }
+  }
 }

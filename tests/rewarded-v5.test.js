@@ -46,6 +46,16 @@ function createStorage(initial = {}) {
   };
 }
 
+function locationFor(href) {
+  const parsed = new URL(href, 'https://jobguidematch.com/');
+  return {
+    href: parsed.href,
+    hostname: parsed.hostname,
+    pathname: parsed.pathname,
+    search: parsed.search
+  };
+}
+
 function cloneRewardedLadder() {
   return JOBGUIDEMATCH_REWARDED_V5.ladder.map(item => Object.assign({}, item));
 }
@@ -232,7 +242,7 @@ function createRewardedFakeGpt({ markSlotBeforeFallback = false, silentRewardedR
     enableServices() {}
   };
 
-  return { googletag, snapshots, clearCalls, slots };
+  return { googletag, snapshots, clearCalls, slots, emit, listeners };
 }
 
 async function runRewardedToExhaustion(expGroup, options = {}) {
@@ -243,6 +253,8 @@ async function runRewardedToExhaustion(expGroup, options = {}) {
       windowRef: {
         googletag: fake.googletag,
         localStorage: createStorage(),
+        sessionStorage: options.sessionStorage || createStorage(),
+        location: options.href ? locationFor(options.href) : undefined,
         __publisherExperienceSlots: {}
       },
       documentRef: {
@@ -404,6 +416,34 @@ test('rewarded v5 variant fallback keeps attribution and clears only price_rule'
   assert.deepEqual(actual.clearCalls.slice(-1), ['price_rule']);
 });
 
+test('rewarded v5 paid traffic attribution survives every priced attempt and fallback', async () => {
+  const actual = await runRewardedToExhaustion('variant', {
+    href: 'https://jobguidematch.com/?utm_source=facebook&utm_campaign=120214567890123'
+  });
+
+  assert.deepEqual(actual.snapshots.map(snapshot => snapshot.utm_source), [
+    'facebook',
+    'facebook',
+    'facebook',
+    'facebook',
+    'facebook',
+    'facebook',
+    'facebook',
+    'facebook'
+  ]);
+  assert.deepEqual(actual.snapshots.map(snapshot => snapshot.utm_campaign), [
+    '120214567890123',
+    '120214567890123',
+    '120214567890123',
+    '120214567890123',
+    '120214567890123',
+    '120214567890123',
+    '120214567890123',
+    '120214567890123'
+  ]);
+  assert.equal(Object.prototype.hasOwnProperty.call(actual.snapshots.at(-1), 'price_rule'), false);
+});
+
 test('native and anchor use explicit fast display ladders while rewarded and interstitial stay isolated', () => {
   const site = configureSites.sites.find(item => item.siteKey === JOBGUIDEMATCH_REWARDED_V5.siteKey);
   const expectedDisplayRounds = [
@@ -520,3 +560,92 @@ test('ads_exp_v4 and ads_exp_v5 use isolated localStorage assignment namespaces'
     [assignmentKey(JOBGUIDEMATCH_REWARDED_V5.siteKey, 'ads_exp_v5')]: 'variant'
   });
 });
+
+
+for (const preloaded of [false, true]) {
+  for (const grant of [false, true]) {
+    test(`rewarded ${preloaded ? 'preloaded' : 'fresh'} playback outlives loading timeout and closes ${grant ? 'granted' : 'declined'}`, async () => {
+      const timers = installManualTimers();
+      const fake = createRewardedFakeGpt({ silentRewardedRequests: true });
+      try {
+        const adapter = new PriceOptimiserRuntimeAdapter({
+          windowRef: { googletag: fake.googletag, localStorage: createStorage(), sessionStorage: createStorage(), __publisherExperienceSlots: {} },
+          documentRef: { querySelector() { return null; }, createElement() { return {}; }, head: { appendChild() {} } },
+          runtime: rewardedRuntime('variant'),
+          logger: { debug() {}, warn() {} }
+        });
+        const events = [];
+        const lifecycle = {
+          ready() { events.push('ready'); },
+          granted() { events.push('granted'); },
+          videoCompleted() { events.push('completed'); },
+          closed() { events.push('closed'); }
+        };
+        let settled = false;
+        let shown = 0;
+        let request;
+        const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+        if (preloaded) {
+          const preload = adapter.preloadRewarded('rewarded');
+          await flush();
+          fake.emit('rewardedSlotReady', { slot: fake.slots[0], makeRewardedVisible() { shown++; return true; } });
+          assert.equal((await preload).status, 'ready');
+          request = adapter.requestRewarded('rewarded', lifecycle);
+        } else {
+          request = adapter.requestRewarded('rewarded', lifecycle);
+          await flush();
+          fake.emit('rewardedSlotReady', { slot: fake.slots[0], makeRewardedVisible() { shown++; return true; } });
+        }
+        request.then(() => { settled = true; });
+        await flush();
+        assert.equal(shown, 1);
+        assert.equal(timers.runNext(15000), false, 'loading deadline must be cancelled during playback');
+        await flush();
+        assert.equal(settled, false);
+        assert.equal(adapter.fullscreenOverlayDepth, 1);
+        for (const name of ['rewardedSlotGranted', 'rewardedSlotClosed', 'rewardedSlotVideoCompleted']) {
+          assert.equal(fake.listeners.get(name).size, 1, `${name} stays attached during playback`);
+        }
+        const slot = fake.slots[0];
+        const payload = { amount: 1, type: 'access' };
+        if (grant) {
+          fake.emit('rewardedSlotGranted', { slot, payload });
+          await flush();
+          assert.equal(settled, false, 'grant must still wait for close');
+          assert.equal(fake.listeners.get('rewardedSlotClosed').size, 1);
+          assert.equal(adapter.fullscreenOverlayDepth, 1);
+        }
+        fake.emit('rewardedSlotVideoCompleted', { slot });
+        fake.emit('rewardedSlotClosed', { slot });
+        const result = await request;
+        assert.equal(result.status, grant ? 'granted' : 'declined');
+        if (grant) assert.deepEqual(result.reward, payload);
+        assert.deepEqual(events, grant ? ['ready', 'granted', 'completed', 'closed'] : ['ready', 'completed', 'closed']);
+        assert.equal(adapter.fullscreenOverlayDepth, 0);
+        for (const listeners of fake.listeners.values()) assert.equal(listeners.size, 0);
+      } finally {
+        timers.restore();
+      }
+    });
+  }
+
+  test(`rewarded ${preloaded ? 'preload' : 'fresh request'} still times out before readiness`, async () => {
+    const timers = installManualTimers();
+    const fake = createRewardedFakeGpt({ silentRewardedRequests: true });
+    try {
+      const adapter = new PriceOptimiserRuntimeAdapter({
+        windowRef: { googletag: fake.googletag, localStorage: createStorage(), sessionStorage: createStorage(), __publisherExperienceSlots: {} },
+        documentRef: { querySelector() { return null; }, createElement() { return {}; }, head: { appendChild() {} } },
+        runtime: rewardedRuntime('variant'),
+        logger: { debug() {}, warn() {} }
+      });
+      const request = preloaded ? adapter.preloadRewarded('rewarded') : adapter.requestRewarded('rewarded');
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      assert.equal(timers.runNext(15000), true);
+      assert.equal((await request).status, 'timeout');
+      for (const listeners of fake.listeners.values()) assert.equal(listeners.size, 0);
+    } finally {
+      timers.restore();
+    }
+  });
+}

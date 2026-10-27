@@ -385,16 +385,23 @@ function jobGuideRuntime() {
 function installFakeBrowser() {
   const elements = {
     '#ad-leaderboard': createFakeElement('ad-leaderboard', {
-      style: { display: 'none', visibility: '' },
-      offsetWidth: 0,
-      offsetHeight: 0
+      style: { display: '', visibility: '' },
+      offsetWidth: 728,
+      offsetHeight: 90
     }),
     '#ad-anchor': createFakeElement('ad-anchor', {
-      style: { display: 'none', visibility: '' },
-      offsetWidth: 0,
-      offsetHeight: 0
+      style: { display: '', visibility: '' },
+      offsetWidth: 728,
+      offsetHeight: 90
     })
   };
+  const rewardDestination = createFakeElement('reward-destination', {
+    style: { display: 'none', visibility: '' },
+    offsetWidth: 728,
+    offsetHeight: 90
+  });
+  rewardDestination.appendChild(elements['#ad-leaderboard']);
+  rewardDestination.appendChild(elements['#ad-anchor']);
   const currentScript = {
     src: 'https://priceoptimiser1.thebesads.com/experiences/jobguidematch.com.js',
     dataset: {
@@ -417,7 +424,7 @@ function installFakeBrowser() {
       json: async () => jobGuideRuntime()
     };
   };
-  return { elements, fake, documentRef, windowRef, fetchCalls, fetchRef };
+  return { elements, fake, documentRef, windowRef, fetchCalls, fetchRef, rewardDestination };
 }
 
 class FakeCustomEvent {
@@ -439,6 +446,12 @@ function restoreGlobal(name, value) {
   else globalThis[name] = value;
 }
 
+async function waitForZeroDelayLadder() {
+  for (let index = 0; index < 6; index += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+}
+
 test('JobGuideMatch site entrypoint pins site identity and preserves owned ad lifecycles', async () => {
   const previous = {
     window: globalThis.window,
@@ -446,7 +459,7 @@ test('JobGuideMatch site entrypoint pins site identity and preserves owned ad li
     fetch: globalThis.fetch,
     CustomEvent: globalThis.CustomEvent
   };
-  const { elements, fake, documentRef, windowRef, fetchCalls, fetchRef } = installFakeBrowser();
+  const { elements, fake, documentRef, windowRef, fetchCalls, fetchRef, rewardDestination } = installFakeBrowser();
 
   globalThis.window = windowRef;
   globalThis.document = documentRef;
@@ -477,21 +490,23 @@ test('JobGuideMatch site entrypoint pins site identity and preserves owned ad li
     assert.equal(documentRef.listenerCount('click'), clickListeners);
     assert.equal(fake.pubads.listenerCount('slotRenderEnded'), gptRenderListeners);
 
-    const prepared = await jobGuideMatch.preloadSlots(['ad-leaderboard', 'ad-anchor']);
-    assert.deepEqual(prepared.results.map(item => [item.slotKey, item.domId, item.status]), [
-      ['native-leaderboard', 'ad-leaderboard', 'prepared'],
-      ['anchor', 'ad-anchor', 'prepared']
+    const preloadPromise = jobGuideMatch.preloadSlots(['ad-leaderboard', 'ad-anchor']);
+    await waitForZeroDelayLadder();
+    const preloaded = await preloadPromise;
+    assert.deepEqual(preloaded.results.map(item => [item.slotKey, item.domId, item.status]), [
+      ['native-leaderboard', 'ad-leaderboard', 'no_fill'],
+      ['anchor', 'ad-anchor', 'filled']
     ]);
-    assert.equal(fake.calls.defineSlot.length, 0);
-    assert.equal(fake.calls.display.length, 0);
-    assert.equal(fake.calls.refresh.length, 0);
+    assert.deepEqual(fake.calls.defineSlot.map(slot => slot.divId), ['ad-leaderboard', 'ad-anchor']);
+    assert.equal(fake.calls.defineSlot.some(slot => String(slot.divId || '').startsWith('poexp-preload-')), false);
+    assert.deepEqual(fake.calls.display.filter(item => typeof item === 'string'), ['ad-leaderboard', 'ad-anchor']);
+    assert.equal(fake.calls.refresh.length, 2);
 
     const rewardedPreload = await jobGuideMatch.preloadRewarded();
     assert.deepEqual(rewardedPreload, { status: 'ready' });
     assert.equal(fake.calls.defineOutOfPageSlot.length, 1);
-    assert.equal(fake.calls.display.length, 1);
-    assert.equal(fake.calls.display[0].format, 'REWARDED');
-    assert.equal(fake.calls.refresh.length, 0);
+    assert.equal(fake.calls.display.filter(item => item && item.format === 'REWARDED').length, 1);
+    assert.equal(fake.calls.refresh.length, 2);
 
     const displayCountBeforeShow = fake.calls.display.length;
     const refreshCountBeforeShow = fake.calls.refresh.length;
@@ -501,6 +516,7 @@ test('JobGuideMatch site entrypoint pins site identity and preserves owned ad li
     assert.equal(fake.calls.refresh.length, refreshCountBeforeShow);
     assert.equal(fake.calls.rewardedVisible.length, 1);
 
+    rewardDestination.style.display = '';
     for (const element of Object.values(elements)) {
       element.style.display = '';
       element.offsetWidth = 728;
@@ -508,8 +524,7 @@ test('JobGuideMatch site entrypoint pins site identity and preserves owned ad li
     }
 
     const revealPromise = jobGuideMatch.revealSlots(['ad-leaderboard', 'ad-anchor']);
-    await new Promise(resolve => setTimeout(resolve, 0));
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await waitForZeroDelayLadder();
     const reveal = await revealPromise;
     assert.deepEqual(reveal.results.map(item => [item.slotKey, item.domId, item.status]), [
       ['native-leaderboard', 'ad-leaderboard', 'no_fill'],
@@ -523,6 +538,26 @@ test('JobGuideMatch site entrypoint pins site identity and preserves owned ad li
       .filter(item => item.divId === 'ad-leaderboard')
       .map(item => item.targeting);
     assert.deepEqual(nativeTargeting, [
+      {
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v6',
+        slot_name: 'native',
+        refresh_round: '0',
+        price_rule: '3'
+      },
+      {
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v6',
+        slot_name: 'native',
+        refresh_round: '0',
+        price_rule: '1'
+      },
+      {
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v6',
+        slot_name: 'native',
+        refresh_round: '0'
+      },
       {
         exp_group: 'variant',
         exp_key: 'ads_exp_v6',

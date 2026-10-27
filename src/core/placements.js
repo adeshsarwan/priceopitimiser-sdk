@@ -1,4 +1,4 @@
-import { ensureElementId, safeQuerySelector } from './dom.js';
+import { ensureElementId, routeMatches, safeQuerySelector } from './dom.js';
 
 function value(source, ...keys) {
   if (!source) return undefined;
@@ -115,6 +115,27 @@ function lazyLoadMarginPxFor(config) {
   return Math.max(0, numberValue(value(config, 'lazyLoadMarginPx', 'lazy_load_margin_px', 'visibilityMarginPx', 'visibility_margin_px'), 300));
 }
 
+function arrayValue(input) {
+  if (Array.isArray(input)) return input;
+  if (input == null || input === '') return [];
+  return [input];
+}
+
+function publisherControlledPreloadRoutes(definition, placement, config) {
+  return [
+    ...arrayValue(value(config, 'publisherControlledPreloadRoutes', 'publisher_controlled_preload_routes')),
+    ...arrayValue(value(placement, 'publisherControlledPreloadRoutes', 'publisher_controlled_preload_routes')),
+    ...arrayValue(value(definition, 'publisherControlledPreloadRoutes', 'publisher_controlled_preload_routes'))
+  ].filter(Boolean);
+}
+
+function publisherControlsPreloadOnRoute(definition, placement, config, windowRef) {
+  const routes = publisherControlledPreloadRoutes(definition, placement, config);
+  if (!routes.length) return false;
+  const pathname = windowRef && windowRef.location && windowRef.location.pathname || '/';
+  return routes.some(pattern => routeMatches(pattern, pathname));
+}
+
 function viewportHeightFor(documentRef, windowRef) {
   return numberValue(
     windowRef && windowRef.innerHeight,
@@ -129,6 +150,46 @@ function isNearViewport(element, documentRef, windowRef, marginPx) {
   const rect = element.getBoundingClientRect();
   if (!rect) return true;
   return Number(rect.bottom) >= -marginPx && Number(rect.top) <= viewportHeight + marginPx;
+}
+
+function viewportStatusFor(element, documentRef, windowRef, marginPx) {
+  if (!element || typeof element.getBoundingClientRect !== 'function') return 'unknown';
+  const viewportHeight = viewportHeightFor(documentRef, windowRef);
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) return 'unknown';
+  const rect = element.getBoundingClientRect();
+  if (!rect) return 'unknown';
+  const top = Number(rect.top);
+  const bottom = Number(rect.bottom);
+  if (!Number.isFinite(top) || !Number.isFinite(bottom)) return 'unknown';
+  if (bottom >= 0 && top <= viewportHeight) return 'visible';
+  if (bottom >= -marginPx && top <= viewportHeight + marginPx) return 'near';
+  return 'far';
+}
+
+function isAnchorPlacement(placement, config) {
+  const key = String(placement && placement.slotKey || '').toLowerCase();
+  const type = String(config && (config.adUnitType || config.ad_unit_type) || placement && placement.adUnitType || '').toLowerCase();
+  return type === 'anchor' || key.includes('anchor');
+}
+
+function requestStartPriority(item) {
+  if (!item || item.viewportStatus === 'unknown') return placementPriority(item && item.placement);
+  if (isAnchorPlacement(item.placement, item.config)) return 1;
+  if (item.viewportStatus === 'visible') return 0;
+  if (item.viewportStatus === 'near') return 2;
+  return 3;
+}
+
+function compareRequestStart(left, right) {
+  const leftPriority = requestStartPriority(left);
+  const rightPriority = requestStartPriority(right);
+  if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+
+  const leftPlacementPriority = placementPriority(left && left.placement);
+  const rightPlacementPriority = placementPriority(right && right.placement);
+  if (leftPlacementPriority !== rightPlacementPriority) return leftPlacementPriority - rightPlacementPriority;
+
+  return left.index - right.index;
 }
 
 function intersectionObserverCtor(windowRef) {
@@ -271,75 +332,103 @@ export async function setupPlacements({ definition, runtime, adapter, documentRe
   const candidates = mergePlacementCandidates(definition, runtime);
   const defined = [];
   const definedDivIds = new Set();
+  const immediate = [];
 
-  const pending = candidates.map(async placement => {
+  const rememberDefinedState = state => {
+    if (!state) return;
+    const divId = state.unit && state.unit.divId;
+    if (divId) {
+      if (definedDivIds.has(divId)) return;
+      definedDivIds.add(divId);
+    }
+    defined.push(state);
+  };
+
+  for (const [index, placement] of candidates.entries()) {
     const config = placement.runtimeConfig || adapter.slotConfig(placement.slotKey, placement.adUnitType, placement);
-    if (!config || config.enabled === false) return null;
+    if (!config || config.enabled === false) continue;
 
-    const type = String(config.adUnitType || config.ad_unit_type || placement.slotKey || '').toLowerCase();
+    if (publisherControlsPreloadOnRoute(definition, placement, config, windowRef)) {
+      logger && logger.debug('placement auto-init deferred for publisher preload route', {
+        slotKey: placement.slotKey
+      });
+      continue;
+    }
+
     const selector = placement.selector || selectorFromRuntime(config);
     let elementId = null;
+    let viewportStatus = 'unknown';
+    const marginPx = lazyLoadMarginPxFor(config);
 
     if (selector) {
       const element = safeQuerySelector(documentRef, selector);
       if (!element) {
         logger && logger.debug('placement element unavailable', { slotKey: placement.slotKey, selector });
-        return null;
-	      }
-	      elementId = ensureElementId(element, `poexp-${placement.slotKey}`);
-	      if (!isRenderablePlacementElement(element, windowRef)) {
-	        const observed = observeVisiblePlacement({
-	          placement,
-	          element,
-	          elementId,
-	          config,
-	          adapter,
-	          windowRef,
-	          marginPx: lazyLoadMarginPxFor(config),
-	          logger,
-	          onStateDefined
-	        });
-	        logger && logger.debug(observed ? 'placement deferred until renderable' : 'placement skipped until renderable', {
-	          slotKey: placement.slotKey,
-	          selector
-	        });
-	        return null;
-	      }
-	      if (visibilityFirstFor(config) && !isNearViewport(element, documentRef, windowRef, lazyLoadMarginPxFor(config))) {
-	        const observed = observeVisiblePlacement({
-	          placement,
-	          element,
-	          elementId,
-	          config,
-	          adapter,
-	          windowRef,
-	          marginPx: lazyLoadMarginPxFor(config),
-	          logger,
-	          onStateDefined
-	        });
-	        if (observed) {
-	          logger && logger.debug('placement deferred until visible', { slotKey: placement.slotKey, selector });
-	          return null;
-	        }
-	      }
-	    }
+        continue;
+      }
+      elementId = ensureElementId(element, `poexp-${placement.slotKey}`);
+      if (!isRenderablePlacementElement(element, windowRef)) {
+        const observed = observeVisiblePlacement({
+          placement,
+          element,
+          elementId,
+          config,
+          adapter,
+          windowRef,
+          marginPx,
+          logger,
+          onStateDefined
+        });
+        logger && logger.debug(observed ? 'placement deferred until renderable' : 'placement skipped until renderable', {
+          slotKey: placement.slotKey,
+          selector
+        });
+        continue;
+      }
 
-	    return adapter.definePlacement({
-      slotKey: placement.slotKey,
+      viewportStatus = viewportStatusFor(element, documentRef, windowRef, marginPx);
+      if (visibilityFirstFor(config) && !isNearViewport(element, documentRef, windowRef, marginPx)) {
+        const observed = observeVisiblePlacement({
+          placement,
+          element,
+          elementId,
+          config,
+          adapter,
+          windowRef,
+          marginPx,
+          logger,
+          onStateDefined
+        });
+        if (observed) {
+          logger && logger.debug('placement deferred until visible', { slotKey: placement.slotKey, selector });
+          continue;
+        }
+      }
+    }
+
+    immediate.push({
+      placement,
       elementId,
-      config
+      config,
+      viewportStatus,
+      index
     });
-  });
+  }
+
+  immediate.sort(compareRequestStart);
+
+  const pending = [];
+  for (const item of immediate) {
+    pending.push(adapter.definePlacement({
+      slotKey: item.placement.slotKey,
+      elementId: item.elementId,
+      config: item.config
+    }));
+  }
 
   const states = await Promise.all(pending);
   for (const state of states) {
-    if (!state) continue;
-    const divId = state.unit && state.unit.divId;
-    if (divId) {
-      if (definedDivIds.has(divId)) continue;
-      definedDivIds.add(divId);
-    }
-    defined.push(state);
+    rememberDefinedState(state);
   }
 
   return defined;

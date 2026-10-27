@@ -1,0 +1,1282 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Price Optimiser Configuration API",
+    "version": "1.0.0",
+    "description": "Configuration and publishing only. Does not create or manage GAM inventory. Authenticated management API is separate from the public SDK runtime API."
+  },
+  "servers": [
+    {
+      "url": "https://{managementHost}/api/v1",
+      "variables": {
+        "managementHost": {
+          "default": "management.example.com"
+        }
+      }
+    }
+  ],
+  "paths": {
+    "/schema": {
+      "get": {
+        "operationId": "getSchema",
+        "summary": "get Schema",
+        "description": "Required scope: read",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful read, preview, or already-published request"
+          },
+          "201": {
+            "description": "Draft revision saved; live ads unchanged"
+          },
+          "202": {
+            "description": "Publication queued; poll statusUrl"
+          },
+          "400": {
+            "description": "Invalid JSON"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired API key"
+          },
+          "403": {
+            "description": "Insufficient scope, site access or disallowed Origin"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision conflict, active publication or reused idempotency key"
+          },
+          "422": {
+            "description": "Invalid configuration or request"
+          },
+          "500": {
+            "description": "Internal failure; no success claimed"
+          }
+        }
+      }
+    },
+    "/sites/{siteKey}/configuration": {
+      "get": {
+        "operationId": "getConfiguration",
+        "summary": "get Configuration",
+        "description": "Required scope: read",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "siteKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 191,
+              "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful read, preview, or already-published request"
+          },
+          "201": {
+            "description": "Draft revision saved; live ads unchanged"
+          },
+          "202": {
+            "description": "Publication queued; poll statusUrl"
+          },
+          "400": {
+            "description": "Invalid JSON"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired API key"
+          },
+          "403": {
+            "description": "Insufficient scope, site access or disallowed Origin"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision conflict, active publication or reused idempotency key"
+          },
+          "422": {
+            "description": "Invalid configuration or request"
+          },
+          "500": {
+            "description": "Internal failure; no success claimed"
+          }
+        }
+      },
+      "put": {
+        "operationId": "saveConfiguration",
+        "summary": "save Configuration",
+        "description": "Required scope: write",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "siteKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 191,
+              "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful read, preview, or already-published request"
+          },
+          "201": {
+            "description": "Draft revision saved; live ads unchanged"
+          },
+          "202": {
+            "description": "Publication queued; poll statusUrl"
+          },
+          "400": {
+            "description": "Invalid JSON"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired API key"
+          },
+          "403": {
+            "description": "Insufficient scope, site access or disallowed Origin"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision conflict, active publication or reused idempotency key"
+          },
+          "422": {
+            "description": "Invalid configuration or request"
+          },
+          "500": {
+            "description": "Internal failure; no success claimed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "expectedRevision": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "configuration": {
+                    "$ref": "#/components/schemas/Configuration"
+                  }
+                },
+                "required": [
+                  "expectedRevision",
+                  "configuration"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sites/{siteKey}/integration": {
+      "get": {
+        "operationId": "getIntegration",
+        "summary": "get Integration",
+        "description": "Required scope: read",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "siteKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 191,
+              "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful read, preview, or already-published request"
+          },
+          "201": {
+            "description": "Draft revision saved; live ads unchanged"
+          },
+          "202": {
+            "description": "Publication queued; poll statusUrl"
+          },
+          "400": {
+            "description": "Invalid JSON"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired API key"
+          },
+          "403": {
+            "description": "Insufficient scope, site access or disallowed Origin"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision conflict, active publication or reused idempotency key"
+          },
+          "422": {
+            "description": "Invalid configuration or request"
+          },
+          "500": {
+            "description": "Internal failure; no success claimed"
+          }
+        }
+      }
+    },
+    "/sites/{siteKey}/publisher-instructions": {
+      "get": {
+        "operationId": "getPublisherInstructions",
+        "summary": "get Publisher Instructions",
+        "description": "Generate shareable publisher instructions from the last confirmed live revision by default. An explicit non-live revision is labeled draft. Requires read scope.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "siteKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 191,
+              "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "json",
+                "markdown"
+              ],
+              "default": "json"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "pageKey",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Publisher instructions as JSON or a downloadable Markdown document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "siteKey": {
+                      "type": "string"
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "source": {
+                      "enum": [
+                        "published",
+                        "draft"
+                      ]
+                    },
+                    "pageKey": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "filename": {
+                      "type": "string"
+                    },
+                    "sdk": {
+                      "type": "object"
+                    },
+                    "markdown": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "siteKey",
+                    "revision",
+                    "source",
+                    "pageKey",
+                    "filename",
+                    "sdk",
+                    "markdown"
+                  ]
+                }
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Draft revision saved; live ads unchanged"
+          },
+          "202": {
+            "description": "Publication queued; poll statusUrl"
+          },
+          "400": {
+            "description": "Invalid JSON"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired API key"
+          },
+          "403": {
+            "description": "Insufficient scope, site access or disallowed Origin"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision conflict, active publication or reused idempotency key"
+          },
+          "422": {
+            "description": "Invalid configuration or request"
+          },
+          "500": {
+            "description": "Internal failure; no success claimed"
+          }
+        }
+      }
+    },
+    "/sites/{siteKey}/revisions": {
+      "get": {
+        "operationId": "listRevisions",
+        "summary": "list Revisions",
+        "description": "Required scope: read",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "siteKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 191,
+              "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful read, preview, or already-published request"
+          },
+          "201": {
+            "description": "Draft revision saved; live ads unchanged"
+          },
+          "202": {
+            "description": "Publication queued; poll statusUrl"
+          },
+          "400": {
+            "description": "Invalid JSON"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired API key"
+          },
+          "403": {
+            "description": "Insufficient scope, site access or disallowed Origin"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision conflict, active publication or reused idempotency key"
+          },
+          "422": {
+            "description": "Invalid configuration or request"
+          },
+          "500": {
+            "description": "Internal failure; no success claimed"
+          }
+        }
+      }
+    },
+    "/sites/{siteKey}/revisions/{revision}": {
+      "get": {
+        "operationId": "getRevision",
+        "summary": "get Revision",
+        "description": "Required scope: read",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "siteKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 191,
+              "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful read, preview, or already-published request"
+          },
+          "201": {
+            "description": "Draft revision saved; live ads unchanged"
+          },
+          "202": {
+            "description": "Publication queued; poll statusUrl"
+          },
+          "400": {
+            "description": "Invalid JSON"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired API key"
+          },
+          "403": {
+            "description": "Insufficient scope, site access or disallowed Origin"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision conflict, active publication or reused idempotency key"
+          },
+          "422": {
+            "description": "Invalid configuration or request"
+          },
+          "500": {
+            "description": "Internal failure; no success claimed"
+          }
+        }
+      }
+    },
+    "/sites/{siteKey}/preview": {
+      "post": {
+        "operationId": "previewConfiguration",
+        "summary": "preview Configuration",
+        "description": "Required scope: read",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "siteKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 191,
+              "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful read, preview, or already-published request"
+          },
+          "201": {
+            "description": "Draft revision saved; live ads unchanged"
+          },
+          "202": {
+            "description": "Publication queued; poll statusUrl"
+          },
+          "400": {
+            "description": "Invalid JSON"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired API key"
+          },
+          "403": {
+            "description": "Insufficient scope, site access or disallowed Origin"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision conflict, active publication or reused idempotency key"
+          },
+          "422": {
+            "description": "Invalid configuration or request"
+          },
+          "500": {
+            "description": "Internal failure; no success claimed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "revision": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "context": {
+                        "$ref": "#/components/schemas/PreviewContext"
+                      }
+                    },
+                    "required": [
+                      "revision"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "configuration": {
+                        "$ref": "#/components/schemas/Configuration"
+                      },
+                      "context": {
+                        "$ref": "#/components/schemas/PreviewContext"
+                      }
+                    },
+                    "required": [
+                      "configuration"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sites/{siteKey}/publish": {
+      "post": {
+        "operationId": "publishConfiguration",
+        "summary": "publish Configuration",
+        "description": "Required scope: publish",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "siteKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 191,
+              "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful read, preview, or already-published request"
+          },
+          "201": {
+            "description": "Draft revision saved; live ads unchanged"
+          },
+          "202": {
+            "description": "Publication queued; poll statusUrl"
+          },
+          "400": {
+            "description": "Invalid JSON"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired API key"
+          },
+          "403": {
+            "description": "Insufficient scope, site access or disallowed Origin"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision conflict, active publication or reused idempotency key"
+          },
+          "422": {
+            "description": "Invalid configuration or request"
+          },
+          "500": {
+            "description": "Internal failure; no success claimed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "revision"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sites/{siteKey}/rollback": {
+      "post": {
+        "operationId": "rollbackConfiguration",
+        "summary": "rollback Configuration",
+        "description": "Required scope: publish",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "siteKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 191,
+              "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful read, preview, or already-published request"
+          },
+          "201": {
+            "description": "Draft revision saved; live ads unchanged"
+          },
+          "202": {
+            "description": "Publication queued; poll statusUrl"
+          },
+          "400": {
+            "description": "Invalid JSON"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired API key"
+          },
+          "403": {
+            "description": "Insufficient scope, site access or disallowed Origin"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision conflict, active publication or reused idempotency key"
+          },
+          "422": {
+            "description": "Invalid configuration or request"
+          },
+          "500": {
+            "description": "Internal failure; no success claimed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "revision": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "revision"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/publications/{id}": {
+      "get": {
+        "operationId": "getPublication",
+        "summary": "get Publication",
+        "description": "Required scope: read",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful read, preview, or already-published request"
+          },
+          "201": {
+            "description": "Draft revision saved; live ads unchanged"
+          },
+          "202": {
+            "description": "Publication queued; poll statusUrl"
+          },
+          "400": {
+            "description": "Invalid JSON"
+          },
+          "401": {
+            "description": "Missing, invalid, revoked or expired API key"
+          },
+          "403": {
+            "description": "Insufficient scope, site access or disallowed Origin"
+          },
+          "404": {
+            "description": "Resource not found"
+          },
+          "409": {
+            "description": "Revision conflict, active publication or reused idempotency key"
+          },
+          "422": {
+            "description": "Invalid configuration or request"
+          },
+          "500": {
+            "description": "Internal failure; no success claimed"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Scoped po_ API key issued by the operator; keep in your application backend."
+      }
+    },
+    "schemas": {
+      "Configuration": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "siteKey": {
+            "type": "string",
+            "maxLength": 191,
+            "pattern": "^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "integrationMode": {
+            "enum": [
+              "both",
+              "auto_placement",
+              "waterfall_only"
+            ]
+          },
+          "debug": {
+            "type": "boolean"
+          },
+          "inventory": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "networkCode": {
+                "type": "string",
+                "pattern": "^[0-9]+(?:,[0-9]+)?$",
+                "maxLength": 64
+              },
+              "deviceRouting": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "tabletInventory": {
+                    "const": "desktop"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "tabletInventory"
+                ]
+              }
+            },
+            "required": [
+              "networkCode",
+              "deviceRouting"
+            ]
+          },
+          "placements": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "slotKey": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]+$",
+                  "maxLength": 128
+                },
+                "format": {
+                  "enum": [
+                    "banner",
+                    "native",
+                    "anchor",
+                    "rewarded",
+                    "interstitial"
+                  ]
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "pageKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "domId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_-]*$",
+                  "maxLength": 191
+                },
+                "sizes": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "anyOf": [
+                      {
+                        "const": "fluid"
+                      },
+                      {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 4096
+                        }
+                      }
+                    ]
+                  }
+                },
+                "adUnits": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "desktop": {
+                      "type": "string",
+                      "pattern": "^/[0-9]+(?:,[0-9]+)?/[A-Za-z0-9_.:/-]+$",
+                      "maxLength": 255
+                    },
+                    "mobile": {
+                      "type": "string",
+                      "pattern": "^/[0-9]+(?:,[0-9]+)?/[A-Za-z0-9_.:/-]+$",
+                      "maxLength": 255
+                    }
+                  },
+                  "required": [
+                    "desktop"
+                  ]
+                },
+                "integrationMode": {
+                  "enum": [
+                    "both",
+                    "auto_placement",
+                    "waterfall_only"
+                  ]
+                },
+                "displayPreloadMode": {
+                  "enum": [
+                    "preparation",
+                    "real"
+                  ]
+                },
+                "targetingKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "pos": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "retryLimit": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 20
+                },
+                "retryTimeoutMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 120000
+                },
+                "refresh": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "delayMs": {
+                      "type": "integer",
+                      "minimum": 30000,
+                      "maximum": 3600000
+                    },
+                    "maximum": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "delayMs",
+                    "maximum"
+                  ]
+                },
+                "rewarded": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "requestTimeoutMs": {
+                      "type": "integer",
+                      "minimum": 1000,
+                      "maximum": 120000
+                    },
+                    "maximumAttempts": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20
+                    },
+                    "rewardPoints": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1000000
+                    }
+                  },
+                  "required": [
+                    "requestTimeoutMs",
+                    "maximumAttempts",
+                    "rewardPoints"
+                  ]
+                }
+              },
+              "required": [
+                "slotKey",
+                "format",
+                "enabled",
+                "adUnits"
+              ]
+            }
+          },
+          "pageRules": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "pageKey": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "pathPattern": {
+                  "type": "string",
+                  "pattern": "^(?:/[^?#]*|\\*)$",
+                  "maxLength": 255
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "priority": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 10000
+                },
+                "integrationMode": {
+                  "enum": [
+                    "auto_placement",
+                    "waterfall_only"
+                  ]
+                }
+              },
+              "required": [
+                "pageKey",
+                "pathPattern",
+                "enabled",
+                "priority",
+                "integrationMode"
+              ]
+            }
+          },
+          "experiment": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "maxLength": 128
+              },
+              "variantPercentage": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "required": [
+              "enabled",
+              "key",
+              "variantPercentage"
+            ]
+          },
+          "pricing": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "format": {
+                  "enum": [
+                    "banner",
+                    "native",
+                    "anchor",
+                    "rewarded",
+                    "interstitial"
+                  ]
+                },
+                "region": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "controlFloor": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 10000
+                },
+                "variantFloor": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 10000
+                },
+                "ladder": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 10000
+                  }
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "format",
+                "region",
+                "controlFloor",
+                "variantFloor",
+                "ladder",
+                "enabled"
+              ]
+            }
+          },
+          "optimization": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "format": {
+                  "enum": [
+                    "banner",
+                    "native",
+                    "anchor",
+                    "rewarded",
+                    "interstitial"
+                  ]
+                },
+                "mode": {
+                  "enum": [
+                    "ai_optimized",
+                    "observe_only",
+                    "manual_floor",
+                    "disabled"
+                  ]
+                },
+                "manualFloor": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 10000
+                }
+              },
+              "required": [
+                "format",
+                "mode"
+              ]
+            }
+          }
+        },
+        "required": [
+          "siteKey",
+          "name",
+          "enabled",
+          "integrationMode",
+          "debug",
+          "inventory",
+          "placements",
+          "pageRules",
+          "experiment",
+          "pricing",
+          "optimization"
+        ]
+      },
+      "PreviewContext": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "enum": [
+              "mobile",
+              "tablet",
+              "desktop",
+              "unknown"
+            ]
+          },
+          "country": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$"
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^/",
+            "maxLength": 2048
+          },
+          "pageKey": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": []
+      }
+    }
+  }
+}

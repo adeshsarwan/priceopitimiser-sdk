@@ -250,16 +250,42 @@ function createFakeGpt({ renderEmpty = false, interstitialEmpty = false } = {}) 
     }
   };
 
-  return { googletag, calls };
+  return { googletag, calls, emit };
 }
 
-function adapterFor(runtime, { href, renderEmpty, interstitialEmpty, innerWidth, elements = {} } = {}) {
+function createSessionStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem(key) {
+      return values.has(key) ? values.get(key) : null;
+    },
+    setItem(key, value) {
+      values.set(key, String(value));
+    },
+    snapshot() {
+      return Object.fromEntries(values);
+    }
+  };
+}
+
+function locationFor(href) {
+  const parsed = new URL(href, 'https://jobguidematch.com/');
+  return {
+    href: parsed.href,
+    hostname: parsed.hostname,
+    pathname: parsed.pathname,
+    search: parsed.search
+  };
+}
+
+function adapterFor(runtime, { href, renderEmpty, interstitialEmpty, innerWidth, elements = {}, displayPreloadMode, sessionStorage } = {}) {
   const fake = createFakeGpt({ renderEmpty, interstitialEmpty });
   const body = createFakeElement('body');
   const windowRef = {
     googletag: fake.googletag,
     __publisherExperienceSlots: {},
-    location: href ? { href } : undefined,
+    sessionStorage: sessionStorage || createSessionStorage(),
+    location: href ? locationFor(href) : undefined,
     innerWidth,
     innerHeight: 900
   };
@@ -287,7 +313,8 @@ function adapterFor(runtime, { href, renderEmpty, interstitialEmpty, innerWidth,
     windowRef,
     documentRef,
     runtime,
-    logger: { debug() {}, warn() {} }
+    logger: { debug() {}, warn() {} },
+    displayPreloadMode
   });
   return { adapter, fake };
 }
@@ -413,6 +440,44 @@ function assertV6RoundSnapshots(snapshots, { adUnitType, round, ladder }) {
   }]));
 }
 
+function paidAttribution(source = 'gdisplay', campaign = '24175854605') {
+  return {
+    utm_source: source,
+    utm_campaign: campaign
+  };
+}
+
+function withPaidAttribution(targeting, source = 'gdisplay', campaign = '24175854605') {
+  return Object.assign({}, targeting, paidAttribution(source, campaign));
+}
+
+function assertNoArbitraryQueryForwarding(snapshot) {
+  assert.equal(Object.prototype.hasOwnProperty.call(snapshot, 'email'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(snapshot, 'foo'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(snapshot, 'gclid'), false);
+}
+
+async function firstNativeTargetingSnapshot(href) {
+  const { adapter, fake } = adapterFor({
+    slots: {},
+    experiment: { enabled: false }
+  }, { href });
+
+  const state = await adapter.definePlacement({
+    slotKey: 'ad-leaderboard',
+    elementId: 'ad-leaderboard',
+    config: {
+      slotKey: 'ad-leaderboard',
+      adUnitName: '/23360556473/jobguidematch.com_Native',
+      adUnitType: 'native',
+      sizes: [[320, 50], [728, 90]],
+      retryLimit: 1
+    }
+  });
+  if (state.requestPromise) await state.requestPromise;
+  return fake.calls.refreshTargeting[0].slot;
+}
+
 function assertDisplayStillFilled(state, element) {
   assert.equal(state.layoutState, 'filled');
   assert.equal(state.filled, true);
@@ -450,6 +515,185 @@ test('sets page_url before enabling GPT services', async () => {
   assert.ok(fake.calls.services.indexOf('pubads.set:page_url') < fake.calls.services.indexOf('enableServices'));
   assert.deepEqual(fake.calls.display, ['ad-leaderboard']);
   assert.equal(fake.calls.refresh.length, 0);
+});
+
+test('display ladder attempts and fallback carry paid traffic attribution without arbitrary query forwarding', async () => {
+  const timers = installManualTimers();
+  try {
+    const element = createFakeElement('ad-leaderboard');
+    const { adapter, fake } = adapterFor({
+      exp_group: 'variant',
+      siteKey: 'jobguidematch.com',
+      experiment: { enabled: true, expKey: 'ads_exp_v5' },
+      slots: {}
+    }, {
+      href: 'https://jobguidematch.com/?utm_source=gdisplay&utm_campaign=24175854605&email=test@example.com&foo=bar&gclid=abc123',
+      renderEmpty: true,
+      elements: { 'ad-leaderboard': element }
+    });
+
+    const state = await adapter.definePlacement({
+      slotKey: 'ad-leaderboard',
+      elementId: 'ad-leaderboard',
+      config: nativeAnchorV6Config('native')
+    });
+
+    await drainZeroDelayRequest(state, timers);
+
+    assert.deepEqual(fake.calls.refreshTargeting.map(item => item.slot), [
+      withPaidAttribution({
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v6',
+        slot_name: 'native',
+        refresh_round: '0',
+        price_rule: '3'
+      }),
+      withPaidAttribution({
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v6',
+        slot_name: 'native',
+        refresh_round: '0',
+        price_rule: '1'
+      }),
+      withPaidAttribution({
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v6',
+        slot_name: 'native',
+        refresh_round: '0'
+      })
+    ]);
+    for (const snapshot of fake.calls.refreshTargeting.map(item => item.slot)) {
+      assertNoArbitraryQueryForwarding(snapshot);
+    }
+    assert.equal(Object.prototype.hasOwnProperty.call(fake.calls.refreshTargeting.at(-1).slot, 'price_rule'), false);
+  } finally {
+    timers.restore();
+  }
+});
+
+test('paid traffic attribution accepts Google, Meta, normalized sources, and large string campaign IDs', async () => {
+  const largeCampaignId = '90071992547409931202145678901234567890';
+  const cases = [
+    {
+      href: 'https://jobguidematch.com/?utm_source=gdisplay&utm_campaign=24175854605',
+      source: 'gdisplay',
+      campaign: '24175854605'
+    },
+    {
+      href: 'https://jobguidematch.com/?utm_source=facebook&utm_campaign=120214567890123',
+      source: 'facebook',
+      campaign: '120214567890123'
+    },
+    {
+      href: `https://jobguidematch.com/?utm_source=%20GDisplay%20&utm_campaign=${largeCampaignId}`,
+      source: 'gdisplay',
+      campaign: largeCampaignId
+    }
+  ];
+
+  for (const { href, source, campaign } of cases) {
+    const snapshot = await firstNativeTargetingSnapshot(href);
+    assert.equal(snapshot.utm_source, source);
+    assert.equal(snapshot.utm_campaign, campaign);
+    assert.equal(typeof snapshot.utm_campaign, 'string');
+  }
+});
+
+test('paid traffic attribution rejects malformed values but keeps valid partial attribution', async () => {
+  const cases = [
+    {
+      href: 'https://jobguidematch.com/worldwide/',
+      expected: {}
+    },
+    {
+      href: 'https://jobguidematch.com/?utm_source=gdisplay&utm_campaign=test',
+      expected: { utm_source: 'gdisplay' }
+    },
+    {
+      href: 'https://jobguidematch.com/?utm_source=gdisplay&utm_campaign=123abc',
+      expected: { utm_source: 'gdisplay' }
+    },
+    {
+      href: 'https://jobguidematch.com/?utm_source=bad%20value&utm_campaign=24175854605',
+      expected: { utm_campaign: '24175854605' }
+    },
+    {
+      href: 'https://jobguidematch.com/?utm_source=facebook%40example.com&utm_campaign=24175854605',
+      expected: { utm_campaign: '24175854605' }
+    },
+    {
+      href: 'https://jobguidematch.com/?utm_source=123&utm_campaign=24175854605',
+      expected: { utm_campaign: '24175854605' }
+    },
+    {
+      href: 'https://jobguidematch.com/?utm_source=gdisplay',
+      expected: { utm_source: 'gdisplay' }
+    },
+    {
+      href: 'https://jobguidematch.com/?utm_campaign=24175854605',
+      expected: { utm_campaign: '24175854605' }
+    }
+  ];
+
+  for (const { href, expected } of cases) {
+    const snapshot = await firstNativeTargetingSnapshot(href);
+    assert.equal(snapshot.utm_source, expected.utm_source);
+    assert.equal(snapshot.utm_campaign, expected.utm_campaign);
+  }
+});
+
+test('paid traffic attribution survives SPA navigation and prefers the first valid session attribution', async () => {
+  const sessionStorage = createSessionStorage();
+  const element = createFakeElement('ad-leaderboard');
+  const { adapter, fake } = adapterFor({
+    exp_group: 'variant',
+    siteKey: 'jobguidematch.com',
+    experiment: { enabled: true, expKey: 'ads_exp_v5' },
+    slots: {}
+  }, {
+    href: 'https://jobguidematch.com/?utm_source=gdisplay&utm_campaign=24175854605',
+    renderEmpty: false,
+    sessionStorage,
+    elements: { 'ad-leaderboard': element }
+  });
+
+  const state = await adapter.definePlacement({
+    slotKey: 'ad-leaderboard',
+    elementId: 'ad-leaderboard',
+    config: nativeAnchorV6Config('native')
+  });
+  if (state.requestPromise) await state.requestPromise;
+
+  adapter.window.location = locationFor('https://jobguidematch.com/worldwide/');
+  await adapter.requestDisplayRefresh(state, { opportunitySource: 'manual_refresh' });
+
+  assert.equal(fake.calls.refreshTargeting[0].slot.utm_source, 'gdisplay');
+  assert.equal(fake.calls.refreshTargeting[0].slot.utm_campaign, '24175854605');
+  assert.equal(fake.calls.refreshTargeting.at(-1).slot.utm_source, 'gdisplay');
+  assert.equal(fake.calls.refreshTargeting.at(-1).slot.utm_campaign, '24175854605');
+
+  const secondElement = createFakeElement('ad-leaderboard');
+  const { fake: secondFake, adapter: secondAdapter } = adapterFor({
+    exp_group: 'variant',
+    siteKey: 'jobguidematch.com',
+    experiment: { enabled: true, expKey: 'ads_exp_v5' },
+    slots: {}
+  }, {
+    href: 'https://jobguidematch.com/?utm_source=facebook&utm_campaign=120214567890123',
+    renderEmpty: false,
+    sessionStorage,
+    elements: { 'ad-leaderboard': secondElement }
+  });
+
+  const secondState = await secondAdapter.definePlacement({
+    slotKey: 'ad-leaderboard',
+    elementId: 'ad-leaderboard',
+    config: nativeAnchorV6Config('native')
+  });
+  if (secondState.requestPromise) await secondState.requestPromise;
+
+  assert.equal(secondFake.calls.refreshTargeting[0].slot.utm_source, 'gdisplay');
+  assert.equal(secondFake.calls.refreshTargeting[0].slot.utm_campaign, '24175854605');
 });
 
 test('native v6 display refresh uses progressive ladders with stable refresh_round per opportunity', async () => {
@@ -1151,6 +1395,341 @@ test('control reveal after prepared initial preload sends one unpriced request t
   }
 });
 
+test('real display preload requests the publisher div while parent is hidden and reveal reuses it', async () => {
+  const timers = installManualTimers();
+  try {
+    const article = createFakeElement('article');
+    article.style.display = 'none';
+    const element = createFakeElement('ad-leaderboard');
+    article.appendChild(element);
+    const { adapter, fake } = adapterFor({
+      exp_group: 'variant',
+      siteKey: 'jobguidematch.com',
+      experiment: { enabled: true, expKey: 'ads_exp_v5' },
+      slots: {}
+    }, {
+      renderEmpty: false,
+      elements: { 'ad-leaderboard': element },
+      displayPreloadMode: 'real'
+    });
+
+    const preload = await adapter.preloadDisplaySlot({
+      slotKey: 'ad-leaderboard',
+      elementId: 'ad-leaderboard',
+      config: nativeAnchorV6Config('native')
+    });
+    const state = preload.state;
+    const opportunityId = state.opportunity && state.opportunity.opportunityId;
+
+    assert.equal(preload.status, 'filled');
+    assert.equal(state.initialPreloadPrepared, true);
+    assert.equal(state.initialRevealRequested, false);
+    assert.equal(state.displayPreloadRequested, true);
+    assert.equal(state.displayPreloadStatus, 'filled');
+    assert.equal(state.opportunity.state, 'PRELOADED_FILLED');
+    assert.equal(state.opportunity.requestCount, 1);
+    assert.equal(state.hasFilledOnce, false);
+    assert.equal(state.refreshTimer, null);
+    assert.equal(fake.calls.defineSlot.length, 1);
+    assert.equal(fake.calls.defineSlot[0].divId, 'ad-leaderboard');
+    assert.deepEqual(fake.calls.display, ['ad-leaderboard']);
+    assert.deepEqual(fake.calls.refresh, []);
+    assert.equal(fake.calls.defineSlot.some(slot => String(slot.divId || '').startsWith('poexp-preload-')), false);
+
+    article.style.display = '';
+    const displayCount = fake.calls.display.length;
+    const refreshCount = fake.calls.refresh.length;
+    const reveal = await adapter.revealDisplayState(state);
+
+    assert.equal(reveal.status, 'filled');
+    assert.equal(reveal.reason, 'preloaded_revealed');
+    assert.equal(state.opportunity.opportunityId, opportunityId);
+    assert.equal(state.opportunity.requestCount, 1);
+    assert.equal(state.opportunity.state, 'COMPLETE');
+    assert.equal(state.opportunity.completionReason, 'filled');
+    assert.equal(state.hasFilledOnce, true);
+    assert.equal(fake.calls.display.length, displayCount);
+    assert.equal(fake.calls.refresh.length, refreshCount);
+    assert.equal(state.refreshTimer != null, true);
+
+    const revealAgain = await adapter.revealDisplayState(state);
+    assert.equal(revealAgain.status, 'filled');
+    assert.equal(fake.calls.display.length, displayCount);
+    assert.equal(fake.calls.refresh.length, refreshCount);
+  } finally {
+    timers.restore();
+  }
+});
+
+test('real display preload pending reveal awaits the same request without duplicate auction', async () => {
+  const article = createFakeElement('article');
+  article.style.display = 'none';
+  const element = createFakeElement('ad-leaderboard');
+  article.appendChild(element);
+  const { adapter, fake } = adapterFor({
+    exp_group: 'variant',
+    siteKey: 'jobguidematch.com',
+    experiment: { enabled: true, expKey: 'ads_exp_v5' },
+    slots: {}
+  }, {
+    renderEmpty: 'pending',
+    elements: { 'ad-leaderboard': element },
+    displayPreloadMode: 'real'
+  });
+
+  const preloadPromise = adapter.preloadDisplaySlot({
+    slotKey: 'ad-leaderboard',
+    elementId: 'ad-leaderboard',
+    config: nativeAnchorV6Config('native')
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  const state = adapter.registry['display:ad-leaderboard'];
+
+  assert.equal(state.displayPreloadStatus, 'pending');
+  assert.equal(state.requestPromise != null, true);
+  assert.equal(fake.calls.defineSlot.length, 1);
+  assert.deepEqual(fake.calls.display, ['ad-leaderboard']);
+
+  article.style.display = '';
+  const revealPromise = adapter.revealDisplayState(state);
+  fake.emit('slotRenderEnded', { slot: state.slot, isEmpty: false });
+
+  const [preload, reveal] = await Promise.all([preloadPromise, revealPromise]);
+  assert.equal(preload.status, 'filled');
+  assert.equal(reveal.status, 'filled');
+  assert.equal(state.opportunity.requestCount, 1);
+  assert.deepEqual(fake.calls.display, ['ad-leaderboard']);
+  assert.deepEqual(fake.calls.refresh, []);
+});
+
+test('real display preload no-fill uses same opportunity for reveal recovery', async () => {
+  const timers = installManualTimers();
+  try {
+    const article = createFakeElement('article');
+    article.style.display = 'none';
+    const element = createFakeElement('ad-leaderboard');
+    article.appendChild(element);
+    const { adapter, fake } = adapterFor({
+      exp_group: 'variant',
+      siteKey: 'jobguidematch.com',
+      experiment: { enabled: true, expKey: 'ads_exp_v5' },
+      slots: {}
+    }, {
+      renderEmpty: [true, true, true, false],
+      elements: { 'ad-leaderboard': element },
+      displayPreloadMode: 'real'
+    });
+
+    const preloadPromise = adapter.preloadDisplaySlot({
+      slotKey: 'ad-leaderboard',
+      elementId: 'ad-leaderboard',
+      config: nativeAnchorV6Config('native')
+    });
+    await Promise.resolve();
+    const state = adapter.registry['display:ad-leaderboard'];
+    await drainZeroDelayRequest(state, timers);
+    const preload = await preloadPromise;
+    const opportunityId = state.opportunity && state.opportunity.opportunityId;
+
+    assert.equal(preload.status, 'no_fill');
+    assert.equal(state.displayPreloadStatus, 'no_fill');
+    assert.equal(state.opportunity.state, 'PRELOAD_NO_FILL');
+    assert.equal(state.opportunity.requestCount, 3);
+    assert.equal(fake.calls.defineSlot.length, 1);
+    assert.deepEqual(fake.calls.display, ['ad-leaderboard']);
+    assert.equal(fake.calls.refresh.length, 2);
+    assert.deepEqual(fake.calls.refreshTargeting.map(item => item.slot), [
+      {
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v6',
+        slot_name: 'native',
+        refresh_round: '0',
+        price_rule: '3'
+      },
+      {
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v6',
+        slot_name: 'native',
+        refresh_round: '0',
+        price_rule: '1'
+      },
+      {
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v6',
+        slot_name: 'native',
+        refresh_round: '0'
+      }
+    ]);
+
+    article.style.display = '';
+    const reveal = await adapter.revealDisplayState(state);
+
+    assert.equal(reveal.status, 'filled');
+    assert.equal(state.opportunity.opportunityId, opportunityId);
+    assert.equal(state.opportunity.requestCount, 4);
+    assert.equal(state.opportunity.state, 'COMPLETE');
+    assert.equal(fake.calls.defineSlot.length, 1);
+    assert.equal(fake.calls.refresh.length, 3);
+    assert.deepEqual(fake.calls.refreshTargeting.at(-1).slot, {
+      exp_group: 'variant',
+      exp_key: 'ads_exp_v6',
+      slot_name: 'native',
+      refresh_round: '0',
+      price_rule: '3'
+    });
+  } finally {
+    timers.restore();
+  }
+});
+
+test('real display preload, fallback, reveal recovery keep paid traffic attribution', async () => {
+  const timers = installManualTimers();
+  try {
+    const article = createFakeElement('article');
+    article.style.display = 'none';
+    const element = createFakeElement('ad-leaderboard');
+    article.appendChild(element);
+    const { adapter, fake } = adapterFor({
+      exp_group: 'variant',
+      siteKey: 'jobguidematch.com',
+      experiment: { enabled: true, expKey: 'ads_exp_v5' },
+      slots: {}
+    }, {
+      href: 'https://jobguidematch.com/?utm_source=gdisplay&utm_campaign=24175854605',
+      renderEmpty: [true, true, true, false],
+      elements: { 'ad-leaderboard': element },
+      displayPreloadMode: 'real'
+    });
+
+    const preloadPromise = adapter.preloadDisplaySlot({
+      slotKey: 'ad-leaderboard',
+      elementId: 'ad-leaderboard',
+      config: nativeAnchorV6Config('native')
+    });
+    await Promise.resolve();
+    const state = adapter.registry['display:ad-leaderboard'];
+    await drainZeroDelayRequest(state, timers);
+    const preload = await preloadPromise;
+
+    article.style.display = '';
+    const reveal = await adapter.revealDisplayState(state);
+
+    assert.equal(preload.status, 'no_fill');
+    assert.equal(reveal.status, 'filled');
+    assert.equal(fake.calls.refreshTargeting.length, 4);
+    assert.deepEqual(fake.calls.refreshTargeting.map(item => item.slot.utm_source), [
+      'gdisplay',
+      'gdisplay',
+      'gdisplay',
+      'gdisplay'
+    ]);
+    assert.deepEqual(fake.calls.refreshTargeting.map(item => item.slot.utm_campaign), [
+      '24175854605',
+      '24175854605',
+      '24175854605',
+      '24175854605'
+    ]);
+    assert.equal(Object.prototype.hasOwnProperty.call(fake.calls.refreshTargeting[2].slot, 'price_rule'), false);
+    assert.equal(fake.calls.refreshTargeting.at(-1).slot.price_rule, '3');
+  } finally {
+    timers.restore();
+  }
+});
+
+test('real display preload timeout uses same opportunity for reveal recovery', async () => {
+  const timers = installManualTimers();
+  try {
+    const article = createFakeElement('article');
+    article.style.display = 'none';
+    const element = createFakeElement('ad-leaderboard');
+    article.appendChild(element);
+    const { adapter, fake } = adapterFor({
+      exp_group: 'variant',
+      siteKey: 'jobguidematch.com',
+      experiment: { enabled: true, expKey: 'ads_exp_v5' },
+      slots: {}
+    }, {
+      renderEmpty: (slot, index) => index === 0 ? 'pending' : false,
+      elements: { 'ad-leaderboard': element },
+      displayPreloadMode: 'real'
+    });
+
+    const preloadPromise = adapter.preloadDisplaySlot({
+      slotKey: 'ad-leaderboard',
+      elementId: 'ad-leaderboard',
+      config: nativeAnchorV6Config('native')
+    });
+    await Promise.resolve();
+    const state = adapter.registry['display:ad-leaderboard'];
+    assert.equal(timers.runNext(1000), true);
+    const preload = await preloadPromise;
+    const opportunityId = state.opportunity && state.opportunity.opportunityId;
+
+    assert.equal(preload.status, 'timeout');
+    assert.equal(state.displayPreloadStatus, 'timeout');
+    assert.equal(state.opportunity.state, 'PRELOAD_FAILED');
+    assert.equal(state.opportunity.requestCount, 1);
+
+    article.style.display = '';
+    const reveal = await adapter.revealDisplayState(state);
+
+    assert.equal(reveal.status, 'filled');
+    assert.equal(state.opportunity.opportunityId, opportunityId);
+    assert.equal(state.opportunity.requestCount, 2);
+    assert.deepEqual(fake.calls.display, ['ad-leaderboard']);
+    assert.equal(fake.calls.refresh.length, 1);
+  } finally {
+    timers.restore();
+  }
+});
+
+test('real control display preload sends one unpriced request and reveal does not re-auction', async () => {
+  const timers = installManualTimers();
+  try {
+    const article = createFakeElement('article');
+    article.style.display = 'none';
+    const element = createFakeElement('ad-anchor');
+    article.appendChild(element);
+    const { adapter, fake } = adapterFor({
+      exp_group: 'control',
+      siteKey: 'jobguidematch.com',
+      experiment: { enabled: true, expKey: 'ads_exp_v5' },
+      slots: {}
+    }, {
+      renderEmpty: false,
+      elements: { 'ad-anchor': element },
+      displayPreloadMode: 'real'
+    });
+
+    const preload = await adapter.preloadDisplaySlot({
+      slotKey: 'anchor',
+      elementId: 'ad-anchor',
+      config: nativeAnchorV6Config('anchor')
+    });
+    const state = preload.state;
+
+    assert.equal(preload.status, 'filled');
+    assert.deepEqual(fake.calls.refreshTargeting.map(item => item.slot), [{
+      exp_group: 'control',
+      exp_key: 'ads_exp_v6',
+      slot_name: 'anchor',
+      refresh_round: '0'
+    }]);
+    assert.equal(Object.prototype.hasOwnProperty.call(fake.calls.refreshTargeting[0].slot, 'price_rule'), false);
+
+    article.style.display = '';
+    const reveal = await adapter.revealDisplayState(state);
+
+    assert.equal(reveal.status, 'filled');
+    assert.equal(state.opportunity.requestCount, 1);
+    assert.deepEqual(fake.calls.display, ['ad-anchor']);
+    assert.deepEqual(fake.calls.refresh, []);
+  } finally {
+    timers.restore();
+  }
+});
+
 test('initial no-fill recovery retries round0 when blank placement becomes visible again', async () => {
   const timers = installManualTimers();
   try {
@@ -1535,6 +2114,73 @@ test('interstitial variant final fallback preserves attribution and clears only 
         page: {}
       }
     ]);
+  } finally {
+    timers.restore();
+  }
+});
+
+test('interstitial ladder and fallback keep paid traffic attribution', async () => {
+  const timers = installManualTimers();
+  try {
+    const { adapter, fake } = adapterFor({
+      exp_group: 'variant',
+      siteKey: 'jobguidematch.com',
+      experiment: { enabled: true, expKey: 'ads_exp_v5' },
+      targetingPolicy: { variant: ['exp_group', 'exp_key', 'slot_name', 'price_rule'] },
+      slots: {
+        interstitial: {
+          slotKey: 'interstitial',
+          adUnitName: '/23360556473/jobguidematch.com_Interstitial',
+          adUnitType: 'interstitial',
+          integrationMode: 'both',
+          waterfall: [15, 8],
+          retryLimit: 2,
+          retryDelayMs: 0,
+          interstitialTimeoutMs: 1000
+        }
+      }
+    }, {
+      href: 'https://jobguidematch.com/?utm_source=facebook&utm_campaign=120214567890123',
+      interstitialEmpty: true
+    });
+
+    let result = null;
+    const request = adapter.requestInterstitial('interstitial').then(value => {
+      result = value;
+      return value;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    let guard = 0;
+    while (!result && timers.runNext(0) && guard < 20) {
+      guard += 1;
+      await Promise.resolve();
+    }
+    if (!result) await request;
+
+    assert.equal(result.status, 'unavailable');
+    assert.deepEqual(fake.calls.refreshTargeting.map(item => item.slot), [
+      withPaidAttribution({
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v5',
+        slot_name: 'interstitial',
+        price_rule: '15'
+      }, 'facebook', '120214567890123'),
+      withPaidAttribution({
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v5',
+        slot_name: 'interstitial',
+        price_rule: '8'
+      }, 'facebook', '120214567890123'),
+      withPaidAttribution({
+        exp_group: 'variant',
+        exp_key: 'ads_exp_v5',
+        slot_name: 'interstitial'
+      }, 'facebook', '120214567890123')
+    ]);
+    assert.equal(Object.prototype.hasOwnProperty.call(fake.calls.refreshTargeting.at(-1).slot, 'price_rule'), false);
   } finally {
     timers.restore();
   }

@@ -1,0 +1,86 @@
+PUBLISHER SETUP — Price Optimiser
+
+Use the matching hosted script. No JS file download or hosting is needed.
+
+jobscurated.com:
+https://priceoptimiser1.thebesads.com/experiences/jobscurated.com.js
+jobsproven.com:
+https://priceoptimiser1.thebesads.com/experiences/jobsproven.com.js
+jobsqualified.com:
+https://priceoptimiser1.thebesads.com/experiences/jobsqualified.com.js
+
+1. Load and initialize once per page.
+Define this function before the script tag:
+
+<script>
+async function onPriceOptimiserLoaded() {
+  const ads = window.PublisherExperience;
+  await ads.init();
+  // Include this line on pages that offer a rewarded ad:
+  await ads.preloadRewarded();
+}
+</script>
+<script defer data-auto-init="false"
+  src="https://priceoptimiser1.thebesads.com/experiences/jobscurated.com.js"
+  onload="onPriceOptimiserLoaded()"></script>
+
+Replace src with the matching site URL. Call the APIs after the script loads.
+preloadRewarded() fetches the rewarded ad without showing it.
+
+2. At the user's rewarded-ad action, show the ad and preload display ads:
+
+window.PublisherExperience.showRewarded({
+  onReady() {
+    void window.PublisherExperience.preloadSlots([
+      'ad-leaderboard', 'ad-incontent', 'ad-results', 'ad-anchor'
+    ]);
+  },
+  onGranted() {
+    // Apply your existing reward/unlock logic.
+  },
+  onFallback() {
+    // Apply your existing unavailable-ad/continue flow.
+  }
+});
+
+Pass only the display IDs used on the destination view. For jobsqualified.com,
+include ad-sidebar when the destination is the home page.
+The actual destination divs must already exist in the same document during
+preload. Keep those same divs when revealing the page; preloads do not carry
+across a full-page navigation. Keep destination content hidden until your
+existing reward flow makes it visible.
+
+3. After making the destination page/section visible, show its display ads:
+
+requestAnimationFrame(() => {
+  void window.PublisherExperience.revealSlots([
+    'ad-leaderboard', 'ad-incontent', 'ad-results', 'ad-anchor'
+  ]);
+});
+
+revealSlots() is the existing display-ad show method. Use the same IDs that
+were preloaded. It reuses a successful preload; failed/no-fill preloads may
+need a recovery request. Ordinary visible placements load automatically.
+
+EXPECTED DIV IDS AND CONFIGURED SIZES (pixels)
+ad-leaderboard: 970x90, 728x90, 320x100, 320x50
+ad-incontent: 300x250, 336x280
+ad-results: 300x250, 336x280
+ad-anchor: 320x50, 320x100, 728x90
+ad-sidebar: 300x250, 300x600 (jobsqualified.com home page only)
+
+Keep your existing placement dimensions and responsive layout. These are
+the sizes you supplied and PO uses them for the Google ad requests, selecting
+supported sizes for the viewport. PO does not infer sizes from CSS.
+
+GAM MAPPING
+Replace <domain> with jobscurated.com, jobsproven.com, or jobsqualified.com.
+ad-leaderboard, ad-incontent, ad-results, ad-sidebar:
+/23360556473/<domain>_Native
+ad-anchor:
+/23360556473/<domain>_Anchor
+rewarded (no div required):
+/23360556473/<domain>_Rewarded
+
+ad-incontent-2, ad-incontent-3 and interstitial are not enabled.
+Outstream is outside this setup.

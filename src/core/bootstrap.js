@@ -111,15 +111,16 @@ export function createExperience(definitionInput, options = {}) {
 
   function setupCurrentPlacements() {
     if (!currentRuntime || !currentAdapter) return Promise.resolve(placementStates);
+    if (placementSetupPromise) return placementSetupPromise;
     let pending = setupPlacements({
       definition,
-	      runtime: currentRuntime,
-	      adapter: currentAdapter,
-	      documentRef,
-	      windowRef,
-	      logger,
-	      onStateDefined: state => rememberPlacementStates([state])
-	    }).then(states => rememberPlacementStates(states)).catch(error => {
+      runtime: currentRuntime,
+      adapter: currentAdapter,
+      documentRef,
+      windowRef,
+      logger,
+      onStateDefined: state => rememberPlacementStates([state])
+    }).then(states => rememberPlacementStates(states)).catch(error => {
       logger.warn('placement setup failed', { message: error.message });
       return placementStates;
     });
@@ -148,6 +149,13 @@ export function createExperience(definitionInput, options = {}) {
       domId: state && state.unit ? state.unit.divId || null : null,
       type: state && state.unit ? state.unit.type || null : null
     };
+  }
+
+  function publicPreloadSlotResult(result, state) {
+    const output = publicSlotResult(result, state);
+    if (output.status === 'unavailable') output.status = 'no_fill';
+    else if (output.status === 'error') output.status = 'request_failed';
+    return output;
   }
 
   function publicRevealSlotResult(result, state) {
@@ -562,7 +570,10 @@ export function createExperience(definitionInput, options = {}) {
         windowRef,
         documentRef,
         runtime,
-        logger
+        logger,
+        displayPreloadMode: options.displayPreloadMode || definition.displayPreloadMode,
+        runtimeConfigUrl: options.runtimeConfigUrl,
+        telemetryFetchRef: options.telemetryFetchRef
       });
 
       currentRuntime = runtime;
@@ -678,7 +689,7 @@ export function createExperience(definitionInput, options = {}) {
         : state.requestPromise
           ? await state.requestPromise
           : await currentAdapter.requestDisplaySlot(state);
-      return publicSlotResult(result, state);
+      return publicPreloadSlotResult(result, state);
     })));
     return { status: 'complete', results };
   }

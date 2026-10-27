@@ -49,7 +49,7 @@ Interstitial and rewarded placements do not need normal DOM selectors and should
 
 ## Quiz Rush Current Runtime
 
-Live runtime-config checked on July 25, 2026:
+Placement layout recorded July 25, 2026; GAM paths migrated October 13, 2026 to BlueEarthMedia (`23350639211`). The existing `ad-*` slot aliases use the same format paths. Outstream Video is configured by the Worker as `/23350639211/jobguidematch.com_Video`, with the matching telemetry validator.
 
 | slotKey | adUnitType | adUnitName | domId | domSelector | sizes | enabled |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -73,16 +73,16 @@ For the generic SDK model, the dashboard should display these rows pre-populated
 
 ## Job Guide Match Current Runtime
 
-Live runtime-config checked on July 25, 2026:
+Placement layout recorded July 25, 2026; GAM paths migrated October 13, 2026 to BlueEarthMedia (`23350639211`). The existing `ad-*` slot aliases use the same format paths. Outstream Video is configured by the Worker as `/23350639211/jobguidematch.com_Video`, with the matching telemetry validator.
 
 | slotKey | adUnitType | adUnitName | domId | domSelector | sizes | enabled |
 | --- | --- | --- | --- | --- | --- | --- |
-| `anchor` | `anchor` | `/23360556473/jobguidematch.com_Anchor` | `ad-anchor` | `#ad-anchor` | `[[320,50],[728,90]]` | true |
-| `interstitial` | `interstitial` | `/23360556473/jobguidematch.com_Interstitial` | | | `null` | true |
-| `native-incontent` | `native` | `/23360556473/jobguidematch.com_Native` | `ad-incontent` | `#ad-incontent` | `null` | true |
-| `native-leaderboard` | `native` | `/23360556473/jobguidematch.com_Native` | `ad-leaderboard` | `#ad-leaderboard` | `null` | true |
-| `native-results` | `native` | `/23360556473/jobguidematch.com_Native` | `ad-results` | `#ad-results` | `null` | true |
-| `rewarded` | `rewarded` | `/23360556473/jobguidematch.com_Rewarded` | | | `null` | true |
+| `anchor` | `anchor` | `/23350639211/jobguidematch.com_Anchor` | `ad-anchor` | `#ad-anchor` | `[[320,50],[728,90]]` | true |
+| `interstitial` | `interstitial` | `/23350639211/jobguidematch.com_Interstitial` | | | `null` | true |
+| `native-incontent` | `native` | `/23350639211/jobguidematch.com_Native` | `ad-incontent` | `#ad-incontent` | `null` | true |
+| `native-leaderboard` | `native` | `/23350639211/jobguidematch.com_Native` | `ad-leaderboard` | `#ad-leaderboard` | `null` | true |
+| `native-results` | `native` | `/23350639211/jobguidematch.com_Native` | `ad-results` | `#ad-results` | `null` | true |
+| `rewarded` | `rewarded` | `/23350639211/jobguidematch.com_Rewarded` | | | `null` | true |
 
 Before testing Job Guide Match with the generic SDK, populate native `sizes_json` with the same concrete size strategy used for Quiz Rush unless the publisher gives different layout sizes.
 

@@ -1,3 +1,19 @@
 node_modules/
 .DS_Store
 npm-debug.log*
+
+# Separate backend repository and local deployment evidence
+/priceoptimiser/
+/reports/
+/deploy-rollbacks/
+*.zip
+*.tar.gz
+# Local credentials and runtime files
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+*.pem
+*.key
+*.log

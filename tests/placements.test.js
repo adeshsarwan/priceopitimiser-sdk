@@ -139,6 +139,72 @@ test('anchor placements are defined before other display placements', async () =
   assert.deepEqual(calls.map(call => call.slotKey), ['ad-anchor', 'ad-incontent']);
 });
 
+test('publisher-controlled preload routes defer auto-init without disabling other routes', async () => {
+  const elements = {
+    '#ad-leaderboard': { id: 'ad-leaderboard' }
+  };
+  const documentRef = {
+    querySelector(selector) {
+      return elements[selector] || null;
+    }
+  };
+  const runtime = {
+    slots: {
+      'native-leaderboard': {
+        slotKey: 'native-leaderboard',
+        adUnitName: '/23360556473/jobguidematch.com_Native',
+        adUnitType: 'native',
+        domId: 'ad-leaderboard',
+        domSelector: '#ad-leaderboard',
+        sizes: [[320, 50], [728, 90]],
+        enabled: true
+      }
+    }
+  };
+  const definition = {
+    displayPreloadMode: 'real',
+    publisherControlledPreloadRoutes: ['/find/apply/*'],
+    placements: [
+      { slotKey: 'ad-leaderboard', selector: '#ad-leaderboard', aliases: ['native-leaderboard'], adUnitType: 'native' }
+    ]
+  };
+  const createAdapter = calls => ({
+    slotConfig() {
+      return null;
+    },
+    async definePlacement(request) {
+      calls.push(request);
+      return { name: request.slotKey, unit: { divId: request.elementId } };
+    }
+  });
+
+  const applyCalls = [];
+  const applyStates = await setupPlacements({
+    definition,
+    runtime,
+    adapter: createAdapter(applyCalls),
+    documentRef,
+    windowRef: { location: { pathname: '/find/apply/acme' } },
+    logger: { debug() {} }
+  });
+
+  assert.deepEqual(applyCalls, []);
+  assert.deepEqual(applyStates, []);
+
+  const normalCalls = [];
+  const normalStates = await setupPlacements({
+    definition,
+    runtime,
+    adapter: createAdapter(normalCalls),
+    documentRef,
+    windowRef: { location: { pathname: '/worldwide/' } },
+    logger: { debug() {} }
+  });
+
+  assert.deepEqual(normalCalls.map(call => call.slotKey), ['ad-leaderboard']);
+  assert.deepEqual(normalStates.map(state => state.name), ['ad-leaderboard']);
+});
+
 test('jobguidematch placements prefer sized native aliases over fluid duplicates', async () => {
   const calls = [];
   const elements = {
@@ -356,17 +422,142 @@ test('visibility-first placements define visible slots immediately and defer off
     }
   });
 
-  assert.deepEqual(calls.map(call => call.slotKey), ['ad-anchor', 'ad-leaderboard']);
-  assert.deepEqual(states.map(state => state.name), ['ad-anchor', 'ad-leaderboard']);
+  assert.deepEqual(calls.map(call => call.slotKey), ['ad-leaderboard', 'ad-anchor']);
+  assert.deepEqual(states.map(state => state.name), ['ad-leaderboard', 'ad-anchor']);
   assert.equal(observers.length, 1);
   assert.equal(observers[0].options.rootMargin, '300px 0px 300px 0px');
 
   observers[0].callback([{ isIntersecting: true, intersectionRatio: 1 }], observers[0]);
   await Promise.resolve();
 
-  assert.deepEqual(calls.map(call => call.slotKey), ['ad-anchor', 'ad-leaderboard', 'ad-results']);
+  assert.deepEqual(calls.map(call => call.slotKey), ['ad-leaderboard', 'ad-anchor', 'ad-results']);
   assert.deepEqual(deferredStates.map(state => state.name), ['ad-results']);
   assert.equal(observers[0].disconnected, true);
+});
+
+test('jobguidematch viewport priority starts visible inventory before below-fold native', async () => {
+  const calls = [];
+  const deferredStates = [];
+  const observers = [];
+  const element = (id, top, height = 90) => ({
+    id,
+    style: { display: '', visibility: '' },
+    hidden: false,
+    getBoundingClientRect() {
+      return {
+        left: 0,
+        top,
+        right: 728,
+        bottom: top + height,
+        width: 728,
+        height
+      };
+    }
+  });
+  const elements = {
+    '#ad-leaderboard': element('ad-leaderboard', 80),
+    '#ad-anchor': element('ad-anchor', 620, 50),
+    '#ad-incontent': element('ad-incontent', 1800, 250),
+    '#ad-results': element('ad-results', 2600, 250)
+  };
+  const windowRef = {
+    innerHeight: 700,
+    getComputedStyle(item) {
+      return item.style || {};
+    },
+    IntersectionObserver: class {
+      constructor(callback, options) {
+        this.callback = callback;
+        this.options = options;
+        this.disconnected = false;
+        observers.push(this);
+      }
+
+      observe(item) {
+        this.element = item;
+      }
+
+      disconnect() {
+        this.disconnected = true;
+      }
+    }
+  };
+  const documentRef = {
+    documentElement: { clientHeight: 700 },
+    querySelector(selector) {
+      return elements[selector] || null;
+    }
+  };
+  const adapter = {
+    slotConfig() {
+      return null;
+    },
+    async definePlacement(request) {
+      calls.push(request);
+      return { name: request.slotKey, unit: { divId: request.elementId } };
+    }
+  };
+  const nativeSlot = slotKey => ({
+    slotKey,
+    adUnitName: `/23360556473/jobguidematch.com_${slotKey}`,
+    adUnitType: 'native',
+    domId: slotKey,
+    domSelector: `#${slotKey}`,
+    sizes: [[300, 250], [336, 280]],
+    enabled: true,
+    visibilityFirst: true,
+    lazyLoadMarginPx: 300
+  });
+  const anchorSlot = {
+    slotKey: 'ad-anchor',
+    adUnitName: '/23360556473/jobguidematch.com_Anchor',
+    adUnitType: 'anchor',
+    domId: 'ad-anchor',
+    domSelector: '#ad-anchor',
+    sizes: [[320, 50], [728, 90]],
+    enabled: true,
+    visibilityFirst: false
+  };
+
+  const states = await setupPlacements({
+    definition: {
+      placements: [
+        { slotKey: 'ad-leaderboard', selector: '#ad-leaderboard', aliases: ['native-leaderboard'], adUnitType: 'native' },
+        { slotKey: 'ad-incontent', selector: '#ad-incontent', aliases: ['native-incontent'], adUnitType: 'native' },
+        { slotKey: 'ad-results', selector: '#ad-results', aliases: ['native-results'], adUnitType: 'native' },
+        { slotKey: 'ad-anchor', selector: '#ad-anchor', aliases: ['anchor'], adUnitType: 'anchor' }
+      ]
+    },
+    runtime: {
+      slots: {
+        'ad-leaderboard': nativeSlot('ad-leaderboard'),
+        'ad-incontent': nativeSlot('ad-incontent'),
+        'ad-results': nativeSlot('ad-results'),
+        'ad-anchor': anchorSlot
+      }
+    },
+    adapter,
+    documentRef,
+    windowRef,
+    logger: { debug() {}, warn() {} },
+    onStateDefined(state) {
+      deferredStates.push(state);
+    }
+  });
+
+  assert.deepEqual(calls.map(call => call.slotKey), ['ad-leaderboard', 'ad-anchor']);
+  assert.deepEqual(states.map(state => state.name), ['ad-leaderboard', 'ad-anchor']);
+  assert.deepEqual(observers.map(observer => observer.element.id), ['ad-incontent', 'ad-results']);
+  assert.deepEqual(calls.map(call => call.elementId), ['ad-leaderboard', 'ad-anchor']);
+  assert.equal(calls.some(call => String(call.elementId || '').startsWith('poexp-preload-')), false);
+
+  observers.find(observer => observer.element.id === 'ad-incontent')
+    .callback([{ isIntersecting: true, intersectionRatio: 1 }]);
+  await Promise.resolve();
+
+  assert.deepEqual(calls.map(call => call.slotKey), ['ad-leaderboard', 'ad-anchor', 'ad-incontent']);
+  assert.deepEqual(deferredStates.map(state => state.name), ['ad-incontent']);
+  assert.equal(calls[2].elementId, 'ad-incontent');
 });
 
 test('hidden placement elements are deferred until they become renderable', async () => {

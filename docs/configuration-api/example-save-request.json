@@ -1,0 +1,49 @@
+{
+  "expectedRevision": 0,
+  "configuration": {
+    "siteKey": "example.com",
+    "name": "Example",
+    "enabled": true,
+    "integrationMode": "waterfall_only",
+    "debug": false,
+    "inventory": {
+      "networkCode": "123",
+      "deviceRouting": {
+        "enabled": true,
+        "tabletInventory": "desktop"
+      }
+    },
+    "placements": [
+      {
+        "slotKey": "ad-incontent",
+        "format": "native",
+        "enabled": true,
+        "domId": "ad-incontent",
+        "sizes": [
+          [
+            300,
+            250
+          ]
+        ],
+        "adUnits": {
+          "desktop": "/123/example_Native",
+          "mobile": "/123/example_Native_m"
+        },
+        "displayPreloadMode": "real",
+        "refresh": {
+          "enabled": true,
+          "delayMs": 45000,
+          "maximum": 2
+        }
+      }
+    ],
+    "pageRules": [],
+    "experiment": {
+      "enabled": false,
+      "key": "test",
+      "variantPercentage": 0.5
+    },
+    "pricing": [],
+    "optimization": []
+  }
+}

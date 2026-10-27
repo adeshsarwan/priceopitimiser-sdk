@@ -378,6 +378,7 @@ function createJobGuideDisplayExperience({ includeFluidDuplicates = true, hidden
   });
   const experience = createExperience({
     siteKey: 'jobguidematch.com',
+    displayPreloadMode: 'real',
     placements: [],
     interstitials: [],
     rewarded: []
@@ -821,19 +822,21 @@ test('public preloadSlots exact jobguidematch div IDs prefer sized mappings over
   assert.equal(elements['#ad-results'].children.length, 0);
 });
 
-test('public preloadSlots explicit ad-leaderboard resolves only the sized Native leaderboard placement', async () => {
+test('public preloadSlots explicit ad-leaderboard preloads only the sized Native leaderboard placement', async () => {
   const { experience, fake, elements } = createJobGuideDisplayExperience();
 
   const result = await experience.preloadSlots(['ad-leaderboard']);
 
   assert.equal(result.status, 'complete');
   assert.deepEqual(result.results, [{
-    status: 'prepared',
+    status: 'filled',
     slotKey: 'native-leaderboard',
     domId: 'ad-leaderboard',
     type: 'native'
   }]);
-  assert.equal(fake.calls.defineSlot.length, 0);
+  assert.equal(fake.calls.defineSlot.length, 1);
+  assert.equal(fake.calls.defineSlot[0].divId, 'ad-leaderboard');
+  assert.deepEqual(fake.calls.display, ['ad-leaderboard']);
   assert.equal(elements['#ad-leaderboard'].children.length, 0);
   assert.equal(fake.calls.defineSlot.some(slot => slot.sizes === 'fluid'), false);
 });
@@ -845,23 +848,26 @@ test('public preloadSlots explicit Native div IDs resolve exactly those configur
 
   assert.equal(result.status, 'complete');
   assert.deepEqual(result.results.map(item => item.slotKey), ['native-incontent', 'native-results']);
-  assert.deepEqual(result.results.map(item => item.status), ['prepared', 'prepared']);
-  assert.equal(fake.calls.defineSlot.length, 0);
+  assert.deepEqual(result.results.map(item => item.status), ['filled', 'filled']);
+  assert.deepEqual(fake.calls.defineSlot.map(slot => slot.divId), ['ad-incontent', 'ad-results']);
+  assert.deepEqual(fake.calls.display, ['ad-incontent', 'ad-results']);
 });
 
-test('public preloadSlots explicit ad-anchor resolves only the configured Anchor placement', async () => {
+test('public preloadSlots explicit ad-anchor preloads only the configured Anchor placement', async () => {
   const { experience, fake } = createJobGuideDisplayExperience();
 
   const result = await experience.preloadSlots(['ad-anchor']);
 
   assert.equal(result.status, 'complete');
   assert.deepEqual(result.results, [{
-    status: 'prepared',
+    status: 'filled',
     slotKey: 'anchor',
     domId: 'ad-anchor',
     type: 'anchor'
   }]);
-  assert.equal(fake.calls.defineSlot.length, 0);
+  assert.equal(fake.calls.defineSlot.length, 1);
+  assert.equal(fake.calls.defineSlot[0].divId, 'ad-anchor');
+  assert.deepEqual(fake.calls.display, ['ad-anchor']);
   assert.equal(fake.calls.defineOutOfPageSlot.length, 0);
 });
 
@@ -902,10 +908,11 @@ test('public preloadSlots mixed explicit div IDs and generic tokens requests onl
   assert.deepEqual(result.results, [
     { status: 'invalid_slot', slotKey: 'native', warning: 'explicit_div_id_required' },
     { status: 'invalid_slot', slotKey: 'anchor', warning: 'explicit_div_id_required' },
-    { status: 'prepared', slotKey: 'native-leaderboard', domId: 'ad-leaderboard', type: 'native' }
+    { status: 'filled', slotKey: 'native-leaderboard', domId: 'ad-leaderboard', type: 'native' }
   ]);
-  assert.equal(fake.calls.defineSlot.length, 0);
-  assert.equal(new Set(fake.calls.defineSlot.map(slot => slot.divId)).size, 0);
+  assert.equal(fake.calls.defineSlot.length, 1);
+  assert.equal(new Set(fake.calls.defineSlot.map(slot => slot.divId)).size, 1);
+  assert.deepEqual(fake.calls.display, ['ad-leaderboard']);
   assert.equal(fake.calls.defineSlot.some(slot => slot.sizes === 'fluid'), false);
 });
 
@@ -1033,7 +1040,7 @@ test('public refreshSlots generic native token warns without expanding inventory
   assert.equal(fake.calls.refresh.length, 0);
 });
 
-test('public preloadSlots prepares hidden display slots without requesting GPT or the publisher div', async () => {
+test('default public preloadSlots prepares hidden display slots without requesting GPT or the publisher div', async () => {
   const fake = createFakeGpt();
   const hiddenSlot = createFakeElement('ad-leaderboard', {
     style: { display: 'none', visibility: '' },
@@ -1114,7 +1121,7 @@ test('public preloadSlots prepares hidden display slots without requesting GPT o
   assert.equal(fake.calls.defineSlot.length, 1);
 });
 
-test('public revealSlots requests a prepared hidden publisher div directly in the real div', async () => {
+test('public revealSlots reuses a successful real display preload in the publisher div', async () => {
   const { experience, fake, elements } = createJobGuideDisplayExperience({
     includeFluidDuplicates: false,
     hidden: true
@@ -1124,14 +1131,17 @@ test('public revealSlots requests a prepared hidden publisher div directly in th
   const preload = await experience.preloadSlots(['ad-leaderboard']);
 
   assert.equal(preload.status, 'complete');
-  assert.equal(preload.results[0].status, 'prepared');
-  assert.equal(fake.calls.defineSlot.length, 0);
+  assert.equal(preload.results[0].status, 'filled');
+  assert.equal(fake.calls.defineSlot.length, 1);
+  assert.equal(fake.calls.defineSlot[0].divId, 'ad-leaderboard');
   assert.equal(slot.children.length, 0);
-  assert.deepEqual(fake.calls.display, []);
+  assert.deepEqual(fake.calls.display, ['ad-leaderboard']);
 
   slot.style.display = '';
   slot.offsetWidth = 728;
   slot.offsetHeight = 90;
+  const displayCount = fake.calls.display.length;
+  const refreshCount = fake.calls.refresh.length;
   const reveal = await experience.revealSlots(['ad-leaderboard']);
 
   assert.equal(reveal.status, 'complete');
@@ -1141,16 +1151,17 @@ test('public revealSlots requests a prepared hidden publisher div directly in th
     domId: 'ad-leaderboard',
     type: 'native',
     filled: true,
-    reason: 'filled'
+    reason: 'preloaded_revealed'
   }]);
   assert.equal(fake.calls.defineSlot.length, 1);
   assert.equal(fake.calls.defineSlot[0].divId, 'ad-leaderboard');
-  assert.deepEqual(fake.calls.display, ['ad-leaderboard']);
+  assert.equal(fake.calls.display.length, displayCount);
+  assert.equal(fake.calls.refresh.length, refreshCount);
   assert.equal(fake.calls.defineSlot.some(slot => slot.divId.startsWith('poexp-preload-')), false);
   assert.equal(slot.children.length, 0);
 });
 
-test('public preloadSlots prepares explicit divs hidden by an ancestor without requesting the publisher div', async () => {
+test('public preloadSlots can request explicit divs hidden by an ancestor in real mode', async () => {
   const fake = createFakeGpt();
   const wrapper = createFakeElement('reward-page', {
     style: { display: 'none', visibility: '' },
@@ -1174,6 +1185,7 @@ test('public preloadSlots prepares explicit divs hidden by an ancestor without r
   });
   const experience = createExperience({
     siteKey: 'jobguidematch.com',
+    displayPreloadMode: 'real',
     placements: [],
     interstitials: [],
     rewarded: []
@@ -1205,16 +1217,18 @@ test('public preloadSlots prepares explicit divs hidden by an ancestor without r
 
   assert.equal(result.status, 'complete');
   assert.deepEqual(result.results, [{
-    status: 'prepared',
+    status: 'filled',
     slotKey: 'native-leaderboard',
     domId: 'ad-leaderboard',
     type: 'native'
   }]);
-  assert.equal(fake.calls.defineSlot.length, 0);
+  assert.equal(fake.calls.defineSlot.length, 1);
+  assert.equal(fake.calls.defineSlot[0].divId, 'ad-leaderboard');
+  assert.deepEqual(fake.calls.display, ['ad-leaderboard']);
   assert.equal(hiddenByAncestorSlot.children.length, 0);
 });
 
-test('public preloadSlots prepares below-fold display slots when their divs already exist', async () => {
+test('public preloadSlots explicit intent overrides below-fold lazy timing in real mode', async () => {
   const fake = createFakeGpt();
   const belowFoldSlot = createFakeElement('ad-incontent', {
     top: 1800,
@@ -1237,6 +1251,7 @@ test('public preloadSlots prepares below-fold display slots when their divs alre
   });
   const experience = createExperience({
     siteKey: 'jobguidematch.com',
+    displayPreloadMode: 'real',
     placements: [],
     interstitials: [],
     rewarded: []
@@ -1270,13 +1285,14 @@ test('public preloadSlots prepares below-fold display slots when their divs alre
 
   assert.equal(result.status, 'complete');
   assert.deepEqual(result.results, [{
-    status: 'prepared',
+    status: 'filled',
     slotKey: 'native-incontent',
     domId: 'ad-incontent',
     type: 'native'
   }]);
-  assert.equal(fake.calls.defineSlot.length, 0);
-  assert.deepEqual(fake.calls.display, []);
+  assert.equal(fake.calls.defineSlot.length, 1);
+  assert.equal(fake.calls.defineSlot[0].divId, 'ad-incontent');
+  assert.deepEqual(fake.calls.display, ['ad-incontent']);
   assert.equal(belowFoldSlot.children.length, 0);
 });
 

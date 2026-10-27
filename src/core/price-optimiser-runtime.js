@@ -1,4 +1,6 @@
 import { normalizeSizes } from './sizes.js';
+import { createAuctionTelemetry } from './telemetry.js';
+import { capturePaidTrafficAttribution, paidTrafficAttributionEntries } from './attribution.js';
 
 const GPT_SRC = 'https://securepubads.g.doubleclick.net/tag/js/gpt.js';
 const DISPLAY_MODES = new Set(['waterfall_only', 'both', 'auto_placement', 'publisher_sdk']);
@@ -60,6 +62,13 @@ function booleanValue(input, fallback) {
   if (['true', '1', 'yes', 'on'].includes(text)) return true;
   if (['false', '0', 'no', 'off'].includes(text)) return false;
   return fallback;
+}
+
+function normalizedDisplayPreloadMode(input) {
+  const text = String(input || '').trim().toLowerCase();
+  if (['real', 'request', 'request_preload', 'gpt'].includes(text)) return 'real';
+  if (['prepare', 'prepared', 'preparation', 'placeholder'].includes(text)) return 'preparation';
+  return null;
 }
 
 function cleanGroup(group) {
@@ -563,6 +572,7 @@ class AdOpportunity {
     ladder,
     refreshIndex = 0,
     preloadMode = 'none',
+    source = 'initial',
     createdAt
   }) {
     this.opportunityId = opportunityId;
@@ -579,6 +589,7 @@ class AdOpportunity {
     this.priceRule = null;
     this.refreshIndex = refreshIndex;
     this.preloadMode = preloadMode;
+    this.source = source || 'initial';
     this.createdAt = createdAt || Date.now();
     this.requestCount = 0;
     this.gptSlot = null;
@@ -607,6 +618,7 @@ class AdOpportunity {
       priceRule: this.priceRule,
       refreshIndex: this.refreshIndex,
       preloadMode: this.preloadMode,
+      opportunitySource: this.source,
       requestCount: this.requestCount,
       state: this.state,
       completionReason: this.completionReason
@@ -744,15 +756,31 @@ function intersectionObserverCtor(windowRef) {
 }
 
 export class PriceOptimiserRuntimeAdapter {
-  constructor({ windowRef, documentRef, runtime, logger, random }) {
+  constructor({ windowRef, documentRef, runtime, logger, random, displayPreloadMode, runtimeConfigUrl, telemetryFetchRef }) {
     this.window = windowRef;
     this.document = documentRef;
     this.runtime = runtime || {};
     this.logger = logger;
     this.random = random;
+    this.runtimeConfigUrl = runtimeConfigUrl || null;
+    this.displayPreloadMode = normalizedDisplayPreloadMode(displayPreloadMode) || 'preparation';
     this.experimentSelections = new Map();
     this.registry = this.window.__publisherExperienceSlots || {};
     this.pageTargetingKeys = new Set();
+    this.paidTrafficAttribution = capturePaidTrafficAttribution({
+      windowRef: this.window,
+      siteKey: runtimeSiteKey(this.runtime)
+    });
+    this.telemetry = createAuctionTelemetry({
+      windowRef,
+      documentRef,
+      runtime: this.runtime,
+      runtimeConfigUrl: this.runtimeConfigUrl,
+      fetchRef: telemetryFetchRef,
+      logger
+    });
+    this.telemetrySlots = typeof WeakMap !== 'undefined' ? new WeakMap() : new Map();
+    this.telemetryGptBridgeInstalled = false;
     this.refreshTimers = new Set();
     this.displayLifecycleTimers = new Set();
     this.rewardedPreloads = new Map();
@@ -929,6 +957,7 @@ export class PriceOptimiserRuntimeAdapter {
     return new Promise(resolve => {
       this.googletag.cmd.push(() => {
         this.configureServicesOnce();
+        this.installGptTelemetryBridge();
         resolve(callback(this.googletag));
       });
     });
@@ -996,6 +1025,9 @@ export class PriceOptimiserRuntimeAdapter {
       activeRefreshRound: 0,
       initialPreloadPrepared: false,
       initialRevealRequested: false,
+      displayPreloadRequested: false,
+      displayPreloadStatus: null,
+      displayPreloadResult: null,
       hasFilledOnce: false,
       initialNoFillRecoveryTimer: null,
       initialNoFillRecoveryWasEligible: false,
@@ -1010,11 +1042,15 @@ export class PriceOptimiserRuntimeAdapter {
     };
     state.opportunity = options.opportunity || this.createOpportunity(state, {
       preloadMode: options.preloadMode,
-      refreshIndex: options.refreshIndex
+      refreshIndex: options.refreshIndex,
+      source: options.source
     });
     if (slot) this.attachOpportunitySlot(state, slot);
     if (options.opportunity) this.traceOpportunity(state, 'continued');
-    else this.traceOpportunity(state, 'created');
+    else {
+      this.traceOpportunity(state, 'created');
+      this.emitOpportunityCreated(state);
+    }
     return state;
   }
 
@@ -1053,6 +1089,9 @@ export class PriceOptimiserRuntimeAdapter {
       ladder: state && state.sequence ? state.sequence : [],
       refreshIndex: Math.max(0, Math.floor(numberValue(overrides.refreshIndex, state && state.displayRefreshIndex, 0) || 0)),
       preloadMode: overrides.preloadMode || 'none',
+      source: overrides.source ||
+        (overrides.preloadMode === 'request_preload' || overrides.preloadMode === 'preparation' ? 'preload' : null) ||
+        (numberValue(overrides.refreshIndex, state && state.displayRefreshIndex, 0) > 0 ? 'scheduled_refresh' : 'initial'),
       createdAt: overrides.createdAt
     });
   }
@@ -1062,6 +1101,7 @@ export class PriceOptimiserRuntimeAdapter {
     state.opportunity = this.createOpportunity(state, overrides);
     if (state.slot) this.attachOpportunitySlot(state, state.slot);
     this.traceOpportunity(state, 'created');
+    this.emitOpportunityCreated(state);
     if (state.slot) this.transitionOpportunity(state, 'SLOT_DEFINED');
     return state.opportunity;
   }
@@ -1069,6 +1109,11 @@ export class PriceOptimiserRuntimeAdapter {
   attachOpportunitySlot(state, slot) {
     if (!state || !state.opportunity) return;
     state.opportunity.gptSlot = slot || null;
+    if (slot && this.telemetrySlots) {
+      try {
+        this.telemetrySlots.set(slot, state);
+      } catch (_) {}
+    }
   }
 
   transitionOpportunity(state, nextState, extra = {}) {
@@ -1092,6 +1137,10 @@ export class PriceOptimiserRuntimeAdapter {
     if (!state || !state.opportunity) return;
     state.opportunity.completionReason = reason || null;
     this.transitionOpportunity(state, 'COMPLETE', { completionReason: state.opportunity.completionReason });
+    this.emitTelemetry(state, 'opportunity_completed', {
+      status: reason || null,
+      opportunity_total_duration_ms: Math.max(0, Date.now() - (state.opportunity.createdAt || Date.now()))
+    });
   }
 
   traceOpportunity(state, event, extra = {}) {
@@ -1100,6 +1149,311 @@ export class PriceOptimiserRuntimeAdapter {
     this.logger.debug(`PO opportunity ${event}`, opportunity.snapshot(Object.assign({
       placement: state && state.name || null
     }, extra)));
+  }
+
+  telemetryTimestamp() {
+    try {
+      const perf = this.window && this.window.performance;
+      if (perf && typeof perf.now === 'function') return Number(perf.now());
+    } catch (_) {}
+    return Date.now();
+  }
+
+  telemetrySlotId(slot, state) {
+    if (slot && typeof slot.getSlotElementId === 'function') {
+      try {
+        const id = slot.getSlotElementId();
+        if (id) return String(id);
+      } catch (_) {}
+    }
+    return state && state.unit && state.unit.divId ? String(state.unit.divId) : null;
+  }
+
+  telemetryStateForSlot(slot) {
+    if (!slot || !this.telemetrySlots) return null;
+    try {
+      return this.telemetrySlots.get(slot) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  slotVisibilitySnapshot(state) {
+    const element = this.elementForState(state);
+    if (!element) return { element_exists: false };
+
+    const rect = elementRect(element);
+    const viewportWidth = viewportDimension(this.window, this.document, 'width');
+    const viewportHeight = viewportDimension(this.window, this.document, 'height');
+    let insideViewport;
+    let width;
+    let height;
+
+    if (rect) {
+      width = numberValue(rect.width, Number(rect.right) - Number(rect.left));
+      height = numberValue(rect.height, Number(rect.bottom) - Number(rect.top));
+      const left = Number(rect.left);
+      const right = Number(rect.right);
+      const top = Number(rect.top);
+      const bottom = Number(rect.bottom);
+      if ([viewportWidth, viewportHeight, left, right, top, bottom].every(Number.isFinite)) {
+        insideViewport = bottom >= 0 && top <= viewportHeight && right >= 0 && left <= viewportWidth;
+      }
+    }
+
+    return {
+      element_exists: true,
+      display: elementStyleValue(element, 'display', this.window),
+      visibility: elementStyleValue(element, 'visibility', this.window),
+      width,
+      height,
+      inside_viewport: insideViewport
+    };
+  }
+
+  ownedTargetingSnapshot(state) {
+    const snapshot = Object.assign({}, state && state.lastTargetingSnapshot || {});
+    const targetingKey = value(state && state.cfg, 'targetingKey', 'targeting_key');
+    if (targetingKey && targetingKey !== 'price_rule' && snapshot.price_rule != null) {
+      snapshot[targetingKey] = snapshot.price_rule;
+    }
+    for (const key of Object.keys(snapshot)) {
+      if (snapshot[key] == null) delete snapshot[key];
+    }
+    return snapshot;
+  }
+
+  isFallbackAttempt(state, floor) {
+    const experiment = state && (state.experiment || this.experiment) || {};
+    return Boolean(experiment.expGroup === 'variant' && state && state.sequence && state.sequence.length > 0 && floor == null);
+  }
+
+  telemetryBaseForState(state, extra = {}) {
+    const opportunity = state && state.opportunity || {};
+    const experiment = state && (state.experiment || this.experiment) || {};
+    const targeting = this.ownedTargetingSnapshot(state);
+    const refreshRound = targeting.refresh_round != null
+      ? targeting.refresh_round
+      : refreshRoundForState(state);
+    const attempt = state && state.telemetryActiveAttempt || null;
+
+    return Object.assign({
+      opportunity_id: opportunity.opportunityId || null,
+      slot_name: state && state.cfg ? slotNameForTargeting(state.cfg, state.name) : null,
+      publisher_div_id: state && state.unit && state.unit.divId || null,
+      gpt_slot_id: this.telemetrySlotId(state && state.slot, state),
+      ad_unit_path: state && state.unit && state.unit.gamPath || null,
+      exp_key: experiment.expKey || null,
+      exp_group: experiment.expGroup || null,
+      refresh_round: refreshRound != null ? String(refreshRound) : null,
+      attempt_number: attempt && attempt.attempt_number || (Number.isFinite(Number(state && state.attempt)) ? Number(state.attempt) + 1 : null),
+      opportunity_source: state && state.telemetryPendingRequestSource || opportunity.source || null
+    }, extra);
+  }
+
+  emitTelemetry(state, eventType, extra = {}) {
+    try {
+      if (!this.telemetry || !this.telemetry.enabled) return;
+      this.telemetry.emit(this.telemetryBaseForState(state, Object.assign({
+        event_type: eventType
+      }, extra)));
+    } catch (_) {}
+  }
+
+  emitOpportunityCreated(state) {
+    const opportunity = state && state.opportunity;
+    if (!opportunity) return;
+    this.emitTelemetry(state, 'opportunity_created', {
+      attempt_number: null,
+      opportunity_source: opportunity.source || 'initial'
+    });
+  }
+
+  startAttemptTelemetry(state, requestMethod, floor, changeCorrelator = 'not_applicable') {
+    if (!state) return;
+    const now = this.telemetryTimestamp();
+    const previous = state.telemetryActiveAttempt || null;
+    const overlapDetected = Boolean(previous && !previous.completed && previous.slot_render_ended_at == null);
+    const isFallback = this.isFallbackAttempt(state, floor);
+    const opportunitySource = state.telemetryPendingRequestSource ||
+      state.telemetryNextRequestSource ||
+      (state.opportunity && state.opportunity.source) ||
+      'other';
+    const previousRenderAt = Number(state.telemetryLastSlotRenderEndedAt);
+    const attempt = {
+      attempt_number: Number(state.attempt) + 1,
+      request_started_at: now,
+      request_method: requestMethod,
+      change_correlator: changeCorrelator,
+      price_rule: floor == null ? undefined : String(floor),
+      is_fallback: isFallback,
+      opportunity_source: opportunitySource,
+      targeting_snapshot: this.ownedTargetingSnapshot(state),
+      completed: false
+    };
+
+    state.telemetryAttempts = state.telemetryAttempts || [];
+    state.telemetryAttempts.push(attempt);
+    state.telemetryActiveAttempt = attempt;
+    state.telemetryNextRequestSource = null;
+    state.telemetryPendingRequestSource = null;
+
+    const common = {
+      attempt_number: attempt.attempt_number,
+      request_method: requestMethod,
+      change_correlator: changeCorrelator,
+      request_started_at: now,
+      price_rule: attempt.price_rule,
+      is_fallback: isFallback,
+      targeting_snapshot: attempt.targeting_snapshot,
+      opportunity_source: opportunitySource,
+      visibility_state: this.document && this.document.visibilityState || null,
+      document_hidden: this.document && this.document.hidden != null ? Boolean(this.document.hidden) : null,
+      slot_visibility: this.slotVisibilitySnapshot(state),
+      previous_render_to_next_request_ms: Number.isFinite(previousRenderAt) ? Math.max(0, now - previousRenderAt) : null,
+      overlap_detected: overlapDetected,
+      previous_attempt_number: overlapDetected && previous ? previous.attempt_number : null
+    };
+
+    if (isFallback) this.emitTelemetry(state, 'fallback_started', common);
+    this.emitTelemetry(state, 'gam_request_started', common);
+  }
+
+  annotateTelemetryAttempt(state, key, timestamp) {
+    const attempt = state && state.telemetryActiveAttempt;
+    if (!attempt || attempt.completed) return null;
+    if (attempt[key] == null) attempt[key] = timestamp;
+    return attempt;
+  }
+
+  handleGptTelemetryEvent(eventType, event) {
+    if (!this.telemetry || !this.telemetry.enabled) return;
+    const state = this.telemetryStateForSlot(event && event.slot);
+    if (!state) return;
+
+    const now = this.telemetryTimestamp();
+    const attempt = state.telemetryActiveAttempt || null;
+    const lateEvent = Boolean(!attempt || attempt.completed);
+    if (!lateEvent) {
+      if (eventType === 'slot_requested') this.annotateTelemetryAttempt(state, 'slot_requested_at', now);
+      if (eventType === 'slot_response_received') this.annotateTelemetryAttempt(state, 'slot_response_received_at', now);
+      if (eventType === 'slot_render_ended') {
+        this.annotateTelemetryAttempt(state, 'slot_render_ended_at', now);
+        state.telemetryLastSlotRenderEndedAt = now;
+      }
+    }
+
+    const current = state.telemetryActiveAttempt || {};
+    this.emitTelemetry(state, eventType, {
+      attempt_number: current.attempt_number,
+      request_method: current.request_method,
+      change_correlator: current.change_correlator,
+      request_started_at: current.request_started_at,
+      slot_requested_at: current.slot_requested_at,
+      slot_response_received_at: current.slot_response_received_at,
+      slot_render_ended_at: eventType === 'slot_render_ended' ? now : current.slot_render_ended_at,
+      duration_ms: current.request_started_at != null ? Math.max(0, now - current.request_started_at) : null,
+      request_to_slot_requested_ms: current.request_started_at != null && current.slot_requested_at != null ? Math.max(0, current.slot_requested_at - current.request_started_at) : null,
+      request_to_response_ms: current.request_started_at != null && current.slot_response_received_at != null ? Math.max(0, current.slot_response_received_at - current.request_started_at) : null,
+      request_to_render_ms: eventType === 'slot_render_ended' && current.request_started_at != null ? Math.max(0, now - current.request_started_at) : null,
+      filled: eventType === 'slot_render_ended' ? !Boolean(event && event.isEmpty) : null,
+      is_empty: eventType === 'slot_render_ended' ? Boolean(event && event.isEmpty) : null,
+      creative_id: event && event.creativeId != null ? String(event.creativeId) : null,
+      line_item_id: event && event.lineItemId != null ? String(event.lineItemId) : null,
+      advertiser_id: event && event.advertiserId != null ? String(event.advertiserId) : null,
+      targeting_snapshot: current.targeting_snapshot || this.ownedTargetingSnapshot(state),
+      price_rule: current.price_rule,
+      is_fallback: current.is_fallback,
+      opportunity_source: current.opportunity_source || (state.opportunity && state.opportunity.source),
+      late_event: lateEvent
+    });
+  }
+
+  emitAttemptOutcome(state, event) {
+    const attempt = state && state.telemetryActiveAttempt;
+    if (!attempt) return;
+    const now = attempt.slot_render_ended_at || this.telemetryTimestamp();
+    const isEmpty = Boolean(event && event.isEmpty);
+    const outcome = isEmpty ? 'attempt_no_fill' : 'attempt_filled';
+    const common = {
+      attempt_number: attempt.attempt_number,
+      request_method: attempt.request_method,
+      change_correlator: attempt.change_correlator,
+      request_started_at: attempt.request_started_at,
+      slot_requested_at: attempt.slot_requested_at,
+      slot_response_received_at: attempt.slot_response_received_at,
+      slot_render_ended_at: now,
+      duration_ms: attempt.request_started_at != null ? Math.max(0, now - attempt.request_started_at) : null,
+      attempt_duration_ms: attempt.request_started_at != null ? Math.max(0, now - attempt.request_started_at) : null,
+      request_to_slot_requested_ms: attempt.request_started_at != null && attempt.slot_requested_at != null ? Math.max(0, attempt.slot_requested_at - attempt.request_started_at) : null,
+      request_to_response_ms: attempt.request_started_at != null && attempt.slot_response_received_at != null ? Math.max(0, attempt.slot_response_received_at - attempt.request_started_at) : null,
+      request_to_render_ms: attempt.request_started_at != null ? Math.max(0, now - attempt.request_started_at) : null,
+      filled: !isEmpty,
+      is_empty: isEmpty,
+      creative_id: event && event.creativeId != null ? String(event.creativeId) : null,
+      line_item_id: event && event.lineItemId != null ? String(event.lineItemId) : null,
+      advertiser_id: event && event.advertiserId != null ? String(event.advertiserId) : null,
+      price_rule: attempt.price_rule,
+      is_fallback: attempt.is_fallback,
+      targeting_snapshot: attempt.targeting_snapshot,
+      opportunity_source: attempt.opportunity_source
+    };
+    this.emitTelemetry(state, outcome, common);
+    if (attempt.is_fallback) {
+      this.emitTelemetry(state, 'fallback_completed', Object.assign({}, common, {
+        status: isEmpty ? 'no_fill' : 'filled'
+      }));
+    }
+    attempt.completed = true;
+  }
+
+  emitTimeoutTelemetry(state) {
+    const attempt = state && state.telemetryActiveAttempt;
+    const now = this.telemetryTimestamp();
+    const common = attempt ? {
+      attempt_number: attempt.attempt_number,
+      request_method: attempt.request_method,
+      change_correlator: attempt.change_correlator,
+      request_started_at: attempt.request_started_at,
+      duration_ms: attempt.request_started_at != null ? Math.max(0, now - attempt.request_started_at) : null,
+      attempt_duration_ms: attempt.request_started_at != null ? Math.max(0, now - attempt.request_started_at) : null,
+      price_rule: attempt.price_rule,
+      is_fallback: attempt.is_fallback,
+      targeting_snapshot: attempt.targeting_snapshot,
+      opportunity_source: attempt.opportunity_source
+    } : {};
+    this.emitTelemetry(state, 'timeout', common);
+    if (attempt && attempt.is_fallback) {
+      this.emitTelemetry(state, 'fallback_completed', Object.assign({}, common, { status: 'timeout' }));
+    }
+    if (attempt) attempt.completed = true;
+  }
+
+  emitErrorTelemetry(state, errorCode, error) {
+    this.emitTelemetry(state, 'error', {
+      error_code: errorCode || 'error',
+      error_message_safe: error && error.message || errorCode || 'error'
+    });
+  }
+
+  installGptTelemetryBridge() {
+    if (this.telemetryGptBridgeInstalled || !this.telemetry || !this.telemetry.enabled) return;
+    const pubads = this.googletag && this.googletag.pubads && this.googletag.pubads();
+    if (!pubads || !pubads.addEventListener) return;
+
+    const onSlotRequested = event => this.handleGptTelemetryEvent('slot_requested', event);
+    const onSlotResponseReceived = event => this.handleGptTelemetryEvent('slot_response_received', event);
+    const onSlotRenderEnded = event => this.handleGptTelemetryEvent('slot_render_ended', event);
+    pubads.addEventListener('slotRequested', onSlotRequested);
+    pubads.addEventListener('slotResponseReceived', onSlotResponseReceived);
+    pubads.addEventListener('slotRenderEnded', onSlotRenderEnded);
+    this.telemetryGptBridgeInstalled = true;
+    this.telemetryGptBridgeCleanup = () => {
+      if (!pubads.removeEventListener) return;
+      pubads.removeEventListener('slotRequested', onSlotRequested);
+      pubads.removeEventListener('slotResponseReceived', onSlotResponseReceived);
+      pubads.removeEventListener('slotRenderEnded', onSlotRenderEnded);
+    };
   }
 
   defineGptDisplaySlot(state) {
@@ -1158,6 +1512,197 @@ export class PriceOptimiserRuntimeAdapter {
     state.maxAttempts = sequence.length + 1;
   }
 
+  displayPreloadModeFor(state) {
+    const cfg = state && state.cfg || {};
+    const rawMode = value(
+      cfg,
+      'displayPreloadMode',
+      'display_preload_mode',
+      'preloadDisplayMode',
+      'preload_display_mode'
+    );
+    if (rawMode === true) return 'real';
+    if (rawMode === false) return 'preparation';
+    return normalizedDisplayPreloadMode(rawMode) || this.displayPreloadMode;
+  }
+
+  realDisplayPreloadEnabled(state) {
+    if (!state || !state.unit || state.unit.type === 'interstitial' || state.unit.type === 'rewarded') return false;
+    return this.displayPreloadModeFor(state) === 'real';
+  }
+
+  normalizeDisplayPreloadStatus(result) {
+    const status = result && result.status ? result.status : 'unavailable';
+    if (status === 'unavailable') return 'no_fill';
+    if (status === 'error') return 'request_failed';
+    return status;
+  }
+
+  displayPreloadReason(status, result) {
+    if (result && result.reason) return result.reason;
+    if (status === 'filled') return 'preloaded';
+    if (status === 'no_fill') return 'preload_no_fill';
+    if (status === 'timeout') return 'preload_timeout';
+    if (status === 'request_failed') return 'preload_request_failed';
+    return status || 'preload_complete';
+  }
+
+  rememberDisplayPreloadResult(state, result) {
+    const status = this.normalizeDisplayPreloadStatus(result);
+    const reason = this.displayPreloadReason(status, result);
+    if (status !== 'filled') state.stopped = true;
+    state.displayPreloadStatus = status;
+    state.displayPreloadResult = { status, reason, state };
+    const transition = status === 'filled'
+      ? 'PRELOADED_FILLED'
+      : status === 'no_fill'
+      ? 'PRELOAD_NO_FILL'
+      : status === 'timeout'
+      ? 'PRELOAD_FAILED'
+      : 'PRELOAD_FAILED';
+    this.transitionOpportunity(state, transition, { preloadStatus: status, reason });
+    this.emitTelemetry(state, 'preload_completed', {
+      status,
+      reason,
+      opportunity_source: 'preload'
+    });
+    return state.displayPreloadResult;
+  }
+
+  displayPreloadFailureReadyForReveal(state) {
+    return Boolean(state && state.displayPreloadRequested &&
+      ['no_fill', 'timeout', 'request_failed'].includes(state.displayPreloadStatus));
+  }
+
+  displayPreloadRecoveryRenderable(state, element) {
+    if (!this.displayPreloadFailureReadyForReveal(state) || !element) return false;
+    if (elementHasMeaningfulSize(element, state.unit && state.unit.sizes, this.window)) return true;
+    const parent = element.parentElement || element.parentNode || null;
+    return elementHasMeaningfulSize(parent, state.unit && state.unit.sizes, this.window);
+  }
+
+  requestInitialRealDisplayPreload(state) {
+    if (!state || !state.unit || !state.unit.divId || state.unit.type === 'interstitial' || state.unit.type === 'rewarded') {
+      return Promise.resolve({ status: 'unavailable', reason: 'unsupported_slot_type', state });
+    }
+    if (!this.elementForState(state)) {
+      return Promise.resolve({ status: 'unavailable', reason: 'publisher_div_missing', state });
+    }
+    if (state.filled && state.displayed) {
+      return Promise.resolve({ status: 'filled', reason: 'already_preloaded', state });
+    }
+    if (state.requestPromise && state.displayPreloadStatus === 'pending') return state.requestPromise;
+    if (state.displayPreloadResult && !state.initialRevealRequested) return Promise.resolve(state.displayPreloadResult);
+    if (state.requestPromise) return state.requestPromise;
+    if (!state.slot && !this.activateDisplayStateSlot(state)) {
+      return Promise.resolve({ status: 'unavailable', reason: 'slot_define_failed', state });
+    }
+
+    this.clearInitialNoFillRecovery(state);
+    this.clearDisplayRefreshTimer(state);
+    state.initialPreloadPrepared = true;
+    state.initialRevealRequested = false;
+    state.displayPreloadRequested = true;
+    state.displayPreloadStatus = 'pending';
+    state.displayPreloadResult = null;
+    state.displayRefreshIndex = 0;
+    state.completedRefreshes = 0;
+    state.activeRefreshRound = 0;
+    state.attempt = 0;
+    state.stopped = false;
+    state.filled = false;
+    state.hasFilledOnce = false;
+    state.requestStarted = true;
+    this.applyDisplayRequestSequence(state);
+
+    if (!state.opportunity || state.opportunity.preloadMode !== 'request_preload' || state.opportunity.state === 'COMPLETE') {
+      this.startOpportunity(state, { preloadMode: 'request_preload', refreshIndex: 0, source: 'preload' });
+    } else {
+      state.opportunity.preloadMode = 'request_preload';
+      state.opportunity.source = 'preload';
+    }
+    state.telemetryPendingRequestSource = 'preload';
+    this.emitTelemetry(state, 'preload_started', {
+      opportunity_source: 'preload'
+    });
+    this.transitionOpportunity(state, 'PREPARED', {
+      ladder: state.sequence.slice(),
+      refreshIndex: 0
+    });
+    this.transitionOpportunity(state, 'PRELOAD_REQUESTING', {
+      ladder: state.sequence.slice(),
+      refreshIndex: 0
+    });
+    this.logger && this.logger.debug('PO display preload request started', {
+      placement: state.name,
+      divId: state.unit && state.unit.divId,
+      sizes: sizeSummary(state.unit && state.unit.sizes),
+      exp_group: state.experiment && state.experiment.expGroup,
+      exp_key: state.experiment && state.experiment.expKey
+    });
+
+    let publicPromise;
+    const requestPromise = this.requestWithRetries(state, {
+      scheduleRefresh: false,
+      completeOpportunity: false
+    }).then(result => this.rememberDisplayPreloadResult(state, result)).catch(error => {
+      this.logger && this.logger.warn('GAM display preload failed', {
+        slot: state.name,
+        runtimeSlotKey: state.unit && state.unit.runtimeSlotKey,
+        message: error && error.message
+      });
+      this.emitErrorTelemetry(state, 'display_preload_failed', error);
+      return this.rememberDisplayPreloadResult(state, {
+        status: 'error',
+        reason: 'request_failed',
+        state
+      });
+    });
+
+    publicPromise = requestPromise.finally(() => {
+      if (state.requestPromise === publicPromise) state.requestPromise = null;
+    });
+    state.requestPromise = publicPromise;
+    return publicPromise;
+  }
+
+  revealPreloadedDisplay(state, result) {
+    const status = this.normalizeDisplayPreloadStatus(result || state.displayPreloadResult);
+    if (status !== 'filled' || !state.filled || !state.displayed) {
+      return null;
+    }
+
+    state.initialRevealRequested = true;
+    state.displayPreloadStatus = 'revealed';
+    state.displayPreloadResult = { status: 'filled', reason: 'preloaded_revealed', state };
+    state.hasFilledOnce = true;
+    state.stopped = true;
+    state.activeRefreshRound = 0;
+    state.completedRefreshes = 0;
+    state.displayRefreshIndex = 0;
+    state.refreshVisibleMs = 0;
+    state.refreshVisibleSince = null;
+    this.clearInitialNoFillRecovery(state);
+    this.transitionOpportunity(state, 'REVEALED', { preloadStatus: 'filled' });
+    this.completeOpportunity(state, 'filled');
+    if (!state.refreshTimer) this.scheduleDisplayRefresh(state);
+    this.logger && this.logger.debug('PO display preload revealed', {
+      placement: state.name,
+      divId: state.unit && state.unit.divId,
+      opportunityId: state.opportunity && state.opportunity.opportunityId
+    });
+    return { status: 'filled', reason: 'preloaded_revealed', state };
+  }
+
+  recoverDisplayPreloadOnReveal(state, preloadResult) {
+    state.initialRevealRequested = true;
+    const preloadStatus = this.normalizeDisplayPreloadStatus(preloadResult || state.displayPreloadResult);
+    state.displayPreloadStatus = 'recovery';
+    this.transitionOpportunity(state, 'REVEAL_RECOVERY', { preloadStatus });
+    state.telemetryPendingRequestSource = 'reveal_recovery';
+    return this.requestDisplaySlot(state);
+  }
+
   clearDisplayRefreshTimer(state) {
     if (!state || !state.refreshTimer) return;
     clearTimeout(state.refreshTimer);
@@ -1192,12 +1737,14 @@ export class PriceOptimiserRuntimeAdapter {
       const eligible = this.initialNoFillRecoveryEligible(state);
       if (eligible && !state.initialNoFillRecoveryWasEligible) {
         state.initialNoFillRecoveryWasEligible = true;
+        state.telemetryPendingRequestSource = 'other';
         this.requestDisplaySlot(state).catch(error => {
           this.logger && this.logger.warn('GAM initial no-fill recovery failed', {
             slot: state.name,
             runtimeSlotKey: state.unit && state.unit.runtimeSlotKey,
             message: error && error.message
           });
+          this.emitErrorTelemetry(state, 'initial_no_fill_recovery_failed', error);
           this.armInitialNoFillRecovery(state);
         });
         return;
@@ -1313,12 +1860,13 @@ export class PriceOptimiserRuntimeAdapter {
 
     state.refreshVisibleMs = 0;
     state.refreshVisibleSince = null;
-    this.requestDisplayRefresh(state).catch(error => {
+    this.requestDisplayRefresh(state, { opportunitySource: 'scheduled_refresh' }).catch(error => {
       this.logger && this.logger.warn('GAM auto refresh failed', {
         slot: state.name,
         runtimeSlotKey: state.unit && state.unit.runtimeSlotKey,
         message: error && error.message
       });
+      this.emitErrorTelemetry(state, 'display_refresh_failed', error);
       this.scheduleDisplayRefresh(state);
     });
   }
@@ -1328,6 +1876,14 @@ export class PriceOptimiserRuntimeAdapter {
     this.refreshTimers.clear();
     for (const timer of this.displayLifecycleTimers) clearTimeout(timer);
     this.displayLifecycleTimers.clear();
+    if (this.telemetryGptBridgeCleanup) {
+      try {
+        this.telemetryGptBridgeCleanup();
+      } catch (_) {}
+      this.telemetryGptBridgeCleanup = null;
+      this.telemetryGptBridgeInstalled = false;
+    }
+    if (this.telemetry && typeof this.telemetry.destroy === 'function') this.telemetry.destroy();
     for (const preload of this.rewardedPreloads.values()) {
       this.cleanupRewardedPreload(preload, { destroySlot: true });
     }
@@ -1499,6 +2055,10 @@ export class PriceOptimiserRuntimeAdapter {
       if (targetingKey !== 'price_rule' && allowDerived('price_rule')) setTargeting(state.slot, 'price_rule', floor);
     }
 
+    for (const [key, attributionValue] of paidTrafficAttributionEntries(this.paidTrafficAttribution)) {
+      setTargeting(state.slot, key, attributionValue);
+    }
+
     state.lastTargetingSnapshot = {
       exp_key: experimentTargeting.expKey || undefined,
       exp_group: experimentTargeting.expGroup || undefined,
@@ -1534,6 +2094,7 @@ export class PriceOptimiserRuntimeAdapter {
       attempt: state.attempt + 1,
       targeting: state.lastTargetingSnapshot || {}
     });
+    this.startAttemptTelemetry(state, 'refresh', floor, 'default');
     this.refreshGptSlot(state);
     return true;
   }
@@ -1556,6 +2117,7 @@ export class PriceOptimiserRuntimeAdapter {
       attempt: state.attempt + 1,
       targeting: state.lastTargetingSnapshot || {}
     });
+    this.startAttemptTelemetry(state, 'display', floor, 'not_applicable');
     if (!state.displayed) {
       state.displayed = true;
       this.displayGptSlot(state);
@@ -1591,7 +2153,11 @@ export class PriceOptimiserRuntimeAdapter {
     const registryKey = `display:${unit.divId}`;
     if (this.registry[registryKey]) return this.registry[registryKey];
 
-    const state = this.createState(slotKey, null, cfg, unit);
+    const preloadMode = this.displayPreloadModeFor({ cfg, unit }) === 'real' ? 'request_preload' : 'preparation';
+    const state = this.createState(slotKey, null, cfg, unit, {
+      preloadMode,
+      source: 'preload'
+    });
     this.registry[registryKey] = state;
     return state;
   }
@@ -1663,6 +2229,7 @@ export class PriceOptimiserRuntimeAdapter {
     if (!state || !state.unit || !state.unit.divId || state.unit.type === 'interstitial' || state.unit.type === 'rewarded') {
       return Promise.resolve({ status: 'unavailable', state });
     }
+    if (this.realDisplayPreloadEnabled(state)) return this.requestInitialRealDisplayPreload(state);
     if (state.filled && state.displayed) return Promise.resolve({ status: 'filled', state });
     if (state.requestPromise) return state.requestPromise;
 
@@ -1679,19 +2246,24 @@ export class PriceOptimiserRuntimeAdapter {
     state.requestStarted = false;
     this.applyDisplayRequestSequence(state);
     if (!state.opportunity || state.opportunity.preloadMode !== 'preparation') {
-      this.startOpportunity(state, { preloadMode: 'preparation', refreshIndex: 0 });
+      this.startOpportunity(state, { preloadMode: 'preparation', refreshIndex: 0, source: 'preload' });
       this.transitionOpportunity(state, 'PREPARED', {
         ladder: state.sequence.slice(),
         refreshIndex: 0
       });
     } else {
       state.opportunity.preloadMode = 'preparation';
+      state.opportunity.source = 'preload';
       state.opportunity.transition('PREPARED', {
         ladder: state.sequence.slice(),
         refreshIndex: 0
       });
       this.traceOpportunity(state, 'prepared');
     }
+    state.telemetryPendingRequestSource = 'preload';
+    this.emitTelemetry(state, 'preload_started', {
+      opportunity_source: 'preload'
+    });
     this.logger && this.logger.debug('PO initial preload prepared', {
       placement: state.name,
       divId: state.unit && state.unit.divId,
@@ -1700,6 +2272,11 @@ export class PriceOptimiserRuntimeAdapter {
       exp_group: state.experiment && state.experiment.expGroup,
       exp_key: state.experiment && state.experiment.expKey
     });
+    this.emitTelemetry(state, 'preload_completed', {
+      status: 'prepared',
+      reason: 'initial_preload_prepared',
+      opportunity_source: 'preload'
+    });
     return Promise.resolve({ status: 'prepared', reason: 'initial_preload_prepared', state });
   }
 
@@ -1707,7 +2284,13 @@ export class PriceOptimiserRuntimeAdapter {
     if (!state || !state.unit || state.unit.type === 'interstitial' || state.unit.type === 'rewarded') {
       return Promise.resolve({ status: 'unavailable', state });
     }
-    if (state.filled && state.displayed) return Promise.resolve({ status: 'filled', state });
+    if (state.filled && state.displayed) return Promise.resolve({ status: 'filled', reason: 'already_preloaded', state });
+    if (this.realDisplayPreloadEnabled(state) && state.requestPromise && state.displayPreloadStatus === 'pending') {
+      return state.requestPromise;
+    }
+    if (this.realDisplayPreloadEnabled(state) && state.displayPreloadResult && !state.initialRevealRequested) {
+      return Promise.resolve(state.displayPreloadResult);
+    }
     return this.requestInitialDisplayPreload(state);
   }
 
@@ -1716,15 +2299,42 @@ export class PriceOptimiserRuntimeAdapter {
       return { status: 'unavailable', state };
     }
 
+    const finishReveal = result => {
+      this.emitTelemetry(state, 'reveal_completed', {
+        status: result && result.status || 'unavailable',
+        reason: result && result.reason || null
+      });
+      return result;
+    };
+    this.emitTelemetry(state, 'reveal_started');
+
     const element = this.elementForState(state);
-    if (!elementHasMeaningfulSize(element, state.unit.sizes, this.window)) {
-      return { status: 'not_renderable', reason: 'hidden_or_not_renderable', state };
+    const canRecoverPreload = this.realDisplayPreloadEnabled(state) &&
+      this.displayPreloadRecoveryRenderable(state, element);
+    if (!elementHasMeaningfulSize(element, state.unit.sizes, this.window) && !canRecoverPreload) {
+      return finishReveal({ status: 'not_renderable', reason: 'hidden_or_not_renderable', state });
     }
     state.initialRevealRequested = true;
 
-    if (state.requestPromise) return state.requestPromise;
-    if (state.filled && state.displayed) return { status: 'filled', state };
-    return this.requestDisplaySlot(state);
+    if (this.realDisplayPreloadEnabled(state) && state.requestPromise && state.displayPreloadStatus === 'pending') {
+      const preloadResult = await state.requestPromise;
+      const revealed = this.revealPreloadedDisplay(state, preloadResult);
+      if (revealed) return finishReveal(revealed);
+      if (this.displayPreloadFailureReadyForReveal(state)) {
+        return finishReveal(await this.recoverDisplayPreloadOnReveal(state, preloadResult));
+      }
+      return finishReveal(preloadResult);
+    }
+    if (this.realDisplayPreloadEnabled(state)) {
+      const revealed = this.revealPreloadedDisplay(state, state.displayPreloadResult);
+      if (revealed) return finishReveal(revealed);
+      if (this.displayPreloadFailureReadyForReveal(state)) {
+        return finishReveal(await this.recoverDisplayPreloadOnReveal(state, state.displayPreloadResult));
+      }
+    }
+    if (state.requestPromise) return finishReveal(await state.requestPromise);
+    if (state.filled && state.displayed) return finishReveal({ status: 'filled', reason: 'already_revealed', state });
+    return finishReveal(await this.requestDisplaySlot(state));
   }
 
   async preloadDisplaySlot({ slotKey, elementId, config }) {
@@ -1747,24 +2357,38 @@ export class PriceOptimiserRuntimeAdapter {
       return Promise.resolve({ status: 'unavailable', state });
     }
     if (state.displayed && state.unit.divId && state.hasFilledOnce) {
-      return this.requestDisplayRefresh(state);
+      return this.requestDisplayRefresh(state, { opportunitySource: state.telemetryPendingRequestSource || 'other' });
     }
 
     this.clearDisplayRefreshTimer(state);
     const wasPreparedPreload = state.initialPreloadPrepared;
+    const wasRealDisplayPreload = Boolean(state.displayPreloadRequested);
+    const opportunityPreloadMode = wasRealDisplayPreload
+      ? 'request_preload'
+      : wasPreparedPreload
+      ? 'preparation'
+      : 'none';
+    const opportunitySource = state.telemetryPendingRequestSource ||
+      (opportunityPreloadMode === 'preparation' || opportunityPreloadMode === 'request_preload' ? 'preload' : 'initial');
     state.attempt = 0;
     state.filled = false;
     state.stopped = false;
     state.initialPreloadPrepared = false;
     state.initialRevealRequested = true;
+    if (!wasRealDisplayPreload) {
+      state.displayPreloadStatus = null;
+      state.displayPreloadResult = null;
+    }
     this.applyDisplayRequestSequence(state);
     if (!state.opportunity || state.opportunity.state === 'COMPLETE') {
       this.startOpportunity(state, {
-        preloadMode: wasPreparedPreload ? 'preparation' : 'none',
-        refreshIndex: state.displayRefreshIndex
+        preloadMode: opportunityPreloadMode,
+        refreshIndex: state.displayRefreshIndex,
+        source: opportunitySource
       });
     } else {
-      state.opportunity.preloadMode = wasPreparedPreload ? 'preparation' : 'none';
+      state.opportunity.preloadMode = opportunityPreloadMode;
+      if (state.telemetryPendingRequestSource) state.opportunity.source = state.telemetryPendingRequestSource;
       state.opportunity.transition('READY_TO_REQUEST', {
         ladder: state.sequence.slice(),
         refreshIndex: state.displayRefreshIndex
@@ -1778,7 +2402,7 @@ export class PriceOptimiserRuntimeAdapter {
     return state.requestPromise;
   }
 
-  requestDisplayRefresh(state) {
+  requestDisplayRefresh(state, options = {}) {
     if (!state || !state.slot || !state.unit || state.unit.type === 'interstitial' || state.unit.type === 'rewarded') {
       return Promise.resolve({ status: 'unavailable', state });
     }
@@ -1799,10 +2423,18 @@ export class PriceOptimiserRuntimeAdapter {
     state.requestStarted = true;
     state.initialPreloadPrepared = false;
     state.initialRevealRequested = true;
+    state.displayPreloadRequested = false;
+    state.displayPreloadStatus = null;
+    state.displayPreloadResult = null;
     this.applyDisplayRequestSequence(state);
     this.startOpportunity(state, {
       preloadMode: 'none',
-      refreshIndex: refreshRound
+      refreshIndex: refreshRound,
+      source: options.opportunitySource || 'other'
+    });
+    this.emitTelemetry(state, 'refresh_opportunity_started', {
+      opportunity_source: options.opportunitySource || 'other',
+      refresh_round: String(refreshRound)
     });
 
     const requestPromise = this.requestWithRetries(state).finally(() => {
@@ -1813,7 +2445,7 @@ export class PriceOptimiserRuntimeAdapter {
     return requestPromise;
   }
 
-  requestWithRetries(state, { timeoutMs, scheduleRefresh = true } = {}) {
+  requestWithRetries(state, { timeoutMs, scheduleRefresh = true, completeOpportunity = true } = {}) {
     return new Promise(resolve => {
       if (!state) {
         resolve({ status: 'unavailable' });
@@ -1834,6 +2466,7 @@ export class PriceOptimiserRuntimeAdapter {
       const finish = status => {
         if (done) return;
         done = true;
+        if (status === 'timeout') this.emitTimeoutTelemetry(state);
         if (status === 'filled') this.markDisplaySlotState(state, 'filled');
         if (status === 'unavailable' || status === 'timeout') this.markDisplaySlotState(state, 'empty');
         if (pubads.removeEventListener) pubads.removeEventListener('slotRenderEnded', onRender);
@@ -1858,7 +2491,7 @@ export class PriceOptimiserRuntimeAdapter {
             state.completedRefreshes = state.activeRefreshRound;
           }
         }
-        this.completeOpportunity(state, status);
+        if (completeOpportunity) this.completeOpportunity(state, status);
         resolve({ status, state });
       };
       const onRender = event => {
@@ -1876,6 +2509,7 @@ export class PriceOptimiserRuntimeAdapter {
         if (!event.isEmpty) {
           state.filled = true;
           state.stopped = true;
+          this.emitAttemptOutcome(state, event);
           finish('filled');
           return;
         }
@@ -1883,11 +2517,13 @@ export class PriceOptimiserRuntimeAdapter {
           state.stopped = true;
           this.logger && this.logger.debug('GAM waterfall exhausted', {
             slot: state.name,
-            runtimeSlotKey: state.unit && state.unit.runtimeSlotKey
+              runtimeSlotKey: state.unit && state.unit.runtimeSlotKey
           });
+          this.emitAttemptOutcome(state, event);
           finish('unavailable');
           return;
         }
+        this.emitAttemptOutcome(state, event);
         state.attempt += 1;
         this.logger && this.logger.debug('GAM retry scheduled', {
           slot: state.name,
@@ -2207,6 +2843,8 @@ export class PriceOptimiserRuntimeAdapter {
 
       if (preload.showLifecycle && preload.showLifecycle.ready) preload.showLifecycle.ready(preload.readyEvent);
       if (preload.readyEvent.makeRewardedVisible) {
+        // The request deadline must not limit playback; retain listeners until close.
+        clearTimeout(preload.consumeTimer);
         if (!preload.overlayActive) {
           preload.overlayActive = true;
           this.setFullscreenOverlayActive(true);
@@ -2333,6 +2971,8 @@ export class PriceOptimiserRuntimeAdapter {
           state.filled = true;
           lifecycle.ready && lifecycle.ready(event);
           if (event.makeRewardedVisible) {
+            // Loading is complete. Reward and close events now own the lifecycle.
+            clearTimeout(timer);
             activateOverlay();
             this.transitionOpportunity(state, 'SHOWING');
             event.makeRewardedVisible();
